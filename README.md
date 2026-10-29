@@ -28,17 +28,97 @@ Hierarchy: `API lot -> Batch -> Pallet -> Case -> Pack`
 ## Structure
 ```
 frontend/     Next.js PWA: scan, dashboard, manufacturer pages
-backend/      REST API, modules per feature, db/schema.sql
+backend/      NestJS REST API, Prisma schema and feature modules
 ai-service/   FastAPI service for packaging check
 ledger/       Hash-chain design notes and utilities
 docs/         Architecture notes
 ```
 
-## Run the database (draft)
+## Run the database
+
+Copy `.env.example` to `.env` in the repository root, then start PostgreSQL:
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d db
 ```
-cp .env.example .env
-docker compose up -d
+
+From `backend/`, install dependencies and apply the initial schema migration:
+
+```powershell
+npm install
+npm run db:deploy
+npm run seed:reset
+npm run start:dev
 ```
+
+Prisma reads the schema from `backend/prisma/schema.prisma`; later schema changes
+should be applied through Prisma migrations. Use `npm run db:migrate -- --name
+<migration-name>` while developing schema changes. The seed command **deletes
+and recreates all application data** and refuses non-local database hosts, so
+use it only with a local demo database.
+Replace the placeholder `QR_HMAC_SECRET` in `.env` before seeding.
+
+The seed creates a manufacturer, two pharmacies (Guwahati and Mumbai), a
+regulator, two batches (including an expired batch), six cases, 60 signed packs,
+and sample scan/ledger events. All demo accounts use `DemoPass123!`:
+
+| Role | Email |
+|---|---|
+| Manufacturer | `manufacturer@xuino.demo` |
+| Pharmacy (Guwahati) | `pharmacy.guwahati@xuino.demo` |
+| Pharmacy (Mumbai) | `pharmacy.mumbai@xuino.demo` |
+| Regulator | `regulator@xuino.demo` |
+
+The initial backend exposes `GET http://localhost:3001/health` and Swagger UI
+at `http://localhost:3001/docs`.
+
+### Auth and manufacturer API
+
+Set both `JWT_SECRET` and `QR_HMAC_SECRET` in `.env` to different private,
+random values of at least 32 characters. Generate a value in PowerShell with
+the command below, and run it twice so each secret is different:
+
+```powershell
+node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64url'))"
+```
+
+Sign in at `POST /auth/login` with a seeded email and `DemoPass123!`; send the
+returned `access_token` as `Authorization: Bearer <token>`. `GET /auth/me`
+returns the current user's safe profile.
+
+Manufacturer-only endpoints:
+
+- `POST /batches` with `drugName`, `batchNumber`, `mfgDate`, `expiryDate`,
+  `numCases` (1-50), and `packsPerCase` (1-100).
+- `GET /batches` to list the signed-in manufacturer's batches.
+- `GET /batches/:id/qr` to retrieve signed QR content for every case and pack.
+
+Creating a batch writes the batch, cases, packs, and `BATCH_REGISTERED` ledger
+event atomically. QR values use the documented base64url JSON payload plus an
+HMAC signature.
+
+### Pharmacy verification API
+
+Sign in as a pharmacy and pass its bearer token to:
+
+- `POST /verify/case` with `{ "payload": "<case QR content>", "lat": 26.14,
+  "lng": 91.73 }` to record receipt of a case. Repeating receipt at the same
+  pharmacy is idempotent; another pharmacy scanning that received case gets a
+  `SUSPICIOUS` result.
+- `POST /verify/pack` with `{ "payload": "<pack QR content>", "lat": 26.14,
+  "lng": 91.73 }` to verify one pack.
+
+Both coordinates are optional, but must be provided together. QR scans are
+recorded, including unknown or invalid QR attempts. Pack verification checks
+expiry, repeat scans, scans at other pharmacies, impossible travel (900 km/h
+threshold), and whether the parent case was received by the scanning pharmacy.
+Suspicious pack scans flag the pack and append ledger events in the same
+transaction as the scan record.
+
+Verification results include `GENUINE`, `SUSPICIOUS`, `EXPIRED`, or `UNKNOWN`.
+If GPS coordinates are omitted, the API uses the pharmacy's registered
+coordinates when available.
 
 ## Team
 See [TEAM_ROLES.md](TEAM_ROLES.md).
