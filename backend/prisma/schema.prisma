@@ -1,0 +1,161 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  MANUFACTURER
+  PHARMACY
+  REGULATOR
+
+  @@map("user_role")
+}
+
+enum CaseStatus {
+  CREATED
+  DISPATCHED
+  RECEIVED
+
+  @@map("case_status")
+}
+
+enum PackStatus {
+  ACTIVE
+  DISPENSED
+  FLAGGED
+
+  @@map("pack_status")
+}
+
+enum ScanTargetType {
+  PACK
+  CASE
+
+  @@map("scan_target_type")
+}
+
+enum ScanResult {
+  GENUINE
+  SUSPICIOUS
+  EXPIRED
+  UNKNOWN
+
+  @@map("scan_result")
+}
+
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  name          String
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  role          UserRole
+  locationName  String?   @map("location_name")
+  lat           Float?    @db.DoublePrecision
+  lng           Float?    @db.DoublePrecision
+  manufacturedBatches Batch[] @relation("BatchManufacturer")
+  receivedCases Case[]   @relation("CaseReceiver")
+  scans         Scan[]
+
+  @@map("users")
+}
+
+model ApiLot {
+  id        String   @id @default(uuid()) @db.Uuid
+  lotNumber String   @map("lot_number")
+  supplier  String
+  batches   Batch[]
+
+  @@map("api_lots")
+}
+
+model Batch {
+  id             String   @id @default(uuid()) @db.Uuid
+  manufacturerId String   @map("manufacturer_id") @db.Uuid
+  apiLotId       String?  @map("api_lot_id") @db.Uuid
+  drugName       String   @map("drug_name")
+  batchNumber    String   @map("batch_number")
+  mfgDate        DateTime @map("mfg_date") @db.Date
+  expiryDate     DateTime @map("expiry_date") @db.Date
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  manufacturer   User     @relation("BatchManufacturer", fields: [manufacturerId], references: [id], onDelete: Restrict)
+  apiLot         ApiLot?  @relation(fields: [apiLotId], references: [id], onDelete: SetNull)
+  cases          Case[]
+
+  @@unique([manufacturerId, batchNumber])
+  @@index([manufacturerId, createdAt])
+  @@map("batches")
+}
+
+model Case {
+  id         String     @id @default(uuid()) @db.Uuid
+  batchId    String     @map("batch_id") @db.Uuid
+  caseCode   String     @unique @map("case_code")
+  signature  String?
+  status     CaseStatus @default(CREATED)
+  receivedBy String?    @map("received_by") @db.Uuid
+  receivedAt DateTime?  @map("received_at") @db.Timestamptz(6)
+  batch      Batch      @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  receiver   User?      @relation("CaseReceiver", fields: [receivedBy], references: [id], onDelete: SetNull)
+  packs      Pack[]
+
+  @@index([batchId])
+  @@map("cases")
+}
+
+model Pack {
+  id             String     @id @default(uuid()) @db.Uuid
+  caseId         String     @map("case_id") @db.Uuid
+  serial         String     @unique
+  signature      String
+  status         PackStatus @default(ACTIVE)
+  scanCount      Int        @default(0) @map("scan_count")
+  firstScannedAt DateTime?  @map("first_scanned_at") @db.Timestamptz(6)
+  parentCase     Case       @relation(fields: [caseId], references: [id], onDelete: Restrict)
+
+  @@index([caseId])
+  @@map("packs")
+}
+
+model Scan {
+  id           String         @id @default(uuid()) @db.Uuid
+  scannedBy    String         @map("scanned_by") @db.Uuid
+  targetType   ScanTargetType @map("target_type")
+  serialOrCode String         @map("serial_or_code")
+  result       ScanResult
+  reason       String?
+  lat          Float?         @db.DoublePrecision
+  lng          Float?         @db.DoublePrecision
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  scanner      User           @relation(fields: [scannedBy], references: [id], onDelete: Restrict)
+
+  @@index([serialOrCode, createdAt])
+  @@index([scannedBy, createdAt])
+  @@index([result, createdAt])
+  @@map("scans")
+}
+
+model LedgerEvent {
+  id        BigInt   @id @default(autoincrement())
+  eventType String   @map("event_type")
+  payload   Json
+  prevHash  String   @map("prev_hash")
+  hash      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("ledger_events")
+}
+
+model MerkleAnchor {
+  id          String   @id @default(uuid()) @db.Uuid
+  fromEventId BigInt   @map("from_event_id")
+  toEventId   BigInt   @map("to_event_id")
+  merkleRoot  String   @map("merkle_root")
+  txHash      String?  @map("tx_hash")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([fromEventId, toEventId])
+  @@map("merkle_anchors")
+}
