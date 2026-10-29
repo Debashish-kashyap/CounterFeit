@@ -11,9 +11,31 @@ import {
   ScanLine,
   ShieldCheck,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest } from "@/lib/api";
 import { useSession } from "@/lib/session";
+
+const REFRESH_INTERVAL = 30; // seconds
+
+/** SVG ring that counts down from REFRESH_INTERVAL to 0 */
+function CountdownRing({ seconds, total }: { seconds: number; total: number }) {
+  const r = 10;
+  const circ = 2 * Math.PI * r;
+  const progress = seconds / total;
+  const dash = circ * progress;
+  return (
+    <svg className="countdown-ring" width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+      <circle cx="14" cy="14" r={r} className="countdown-track" />
+      <circle
+        cx="14" cy="14" r={r}
+        className="countdown-fill"
+        strokeDasharray={`${dash} ${circ}`}
+        strokeDashoffset={circ * 0.25} /* start at top */
+        style={{ transition: "stroke-dasharray 1s linear" }}
+      />
+    </svg>
+  );
+}
 
 type Summary = {
   totalScans: number;
@@ -57,10 +79,13 @@ export default function DashboardPage() {
   const [hotspots, setHotspots] = useState<Hotspot[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [countdown, setCountdown] = useState(REFRESH_INTERVAL);
+  const countdownRef = useRef(REFRESH_INTERVAL);
 
-  async function load() {
+  const load = useCallback(async (isAuto = false) => {
     if (!token) return;
-    setBusy(true);
+    if (!isAuto) setBusy(true);
     setError("");
     try {
       const [nextSummary, nextScans, nextFlagged, nextHotspots] = await Promise.all([
@@ -73,16 +98,36 @@ export default function DashboardPage() {
       setScans(nextScans.data);
       setFlagged(nextFlagged.data);
       setHotspots(nextHotspots);
+      setLastUpdated(new Date());
+      // reset countdown
+      countdownRef.current = REFRESH_INTERVAL;
+      setCountdown(REFRESH_INTERVAL);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to load dashboard");
     } finally {
       setBusy(false);
     }
-  }
+  }, [token]);
 
+  // Initial load
   useEffect(() => {
     void load();
-  }, [token]);
+  }, [load]);
+
+  // Auto-refresh: tick countdown every second, fire load every 30s
+  useEffect(() => {
+    if (!token) return;
+    const ticker = setInterval(() => {
+      countdownRef.current -= 1;
+      setCountdown(countdownRef.current);
+      if (countdownRef.current <= 0) {
+        countdownRef.current = REFRESH_INTERVAL;
+        setCountdown(REFRESH_INTERVAL);
+        void load(true);
+      }
+    }, 1000);
+    return () => clearInterval(ticker);
+  }, [token, load]);
 
   return (
     <div className="content-wrap">
@@ -92,10 +137,23 @@ export default function DashboardPage() {
           <h1>Supply-chain overview</h1>
           <p>Recent verification activity and cases that need attention.</p>
         </div>
-        <button className="button button-quiet refresh-button" onClick={() => void load()} disabled={busy}>
-          {busy ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}Refresh
-        </button>
+        <div className="refresh-bar">
+          {lastUpdated && (
+            <span className="last-updated">
+              <span className="live-dot" />
+              Updated {new Intl.DateTimeFormat("en", { timeStyle: "short" }).format(lastUpdated)}
+            </span>
+          )}
+          <span className="countdown-wrap" title={`Next refresh in ${countdown}s`}>
+            <CountdownRing seconds={countdown} total={REFRESH_INTERVAL} />
+            <span className="countdown-secs">{countdown}s</span>
+          </span>
+          <button className="button button-quiet refresh-button" onClick={() => void load()} disabled={busy}>
+            {busy ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}Refresh
+          </button>
+        </div>
       </section>
+
 
       {error && <div className="error-banner page-error"><CircleAlert size={17} />{error}</div>}
 
