@@ -322,7 +322,7 @@ Run `append` inside the **same DB transaction** as the scan/case update.
 
 ### 5.1 MVP level (must build)
 - Hash-chained `ledger_events` table in Postgres (section 2 and 3.7)
-- Events logged: `BATCH_REGISTERED`, `CASE_RECEIVED`, `PACK_SCANNED`, `FLAGGED`
+- Events logged: `BATCH_REGISTERED`, `SHIPPED`, `CASE_RECEIVED`, `PACK_CHECKED`, `PACK_SOLD`, and `FLAGGED` when a conflict is detected
 - `/ledger/verify` endpoint and the UI button
 - **Demo moment:** manually edit one row in the DB, click "Verify chain", show the red "tampered at event #N" result
 
@@ -413,7 +413,7 @@ Suggested split for the 3 members (Backend/AI lead, Frontend/UI, Research/Docs).
 
 ## 9. Pre-Hackathon Checklist
 
-- [ ] Node 20+, Docker, Postgres image pulled, Python 3.11 (if doing AI)
+- [ ] Node.js 20.19+ (or 22.12+/24+), npm, Docker, Postgres image pulled, Python 3.11 (only if doing AI)
 - [ ] Repo cloned, `/frontend`, `/backend`, `/ai-service` folders and `.env.example` ready
 - [ ] Packages pre-installed once (so the hackathon Wi-Fi is not the bottleneck): `@nestjs/*`, `prisma`/`typeorm`, `bcrypt`, `@zxing/browser`, `qrcode`, `next-pwa`, `leaflet`, `ethers`
 - [ ] Testnet wallet funded, RPC key saved (only if attempting anchoring)
@@ -428,7 +428,7 @@ Suggested split for the 3 members (Backend/AI lead, Frontend/UI, Research/Docs).
 - [ ] A manufacturer can register a batch and download QR codes
 - [ ] A pharmacy can scan a single pack and get one of four results with a reason
 - [ ] A pharmacy can scan a case and mark all its packs received with one custody event
-- [ ] Repeat-scan, impossible-travel and double-received-case rules each trigger on demand
+- [ ] Conflicting-fact rules trigger on demand: repeat scans alone do not flag a pack; repeat sales, out-of-chain receipts or sales, impossible travel, and multiple distinct pre-sale devices or places can be flagged
 - [ ] The dashboard shows summary, scan log and flagged events
 - [ ] The ledger verify button detects a manually tampered row
 - [ ] The whole flow runs from a phone browser as an installable PWA

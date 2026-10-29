@@ -19,6 +19,7 @@ import {
   UserRole,
 } from "@prisma/client";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { getAppSecret } from "../config/secrets";
 import { AuthUser } from "../auth/auth-user";
 import { LedgerService } from "../ledger/ledger.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -953,15 +954,12 @@ export class SupplyChainService {
     content: string,
     expectedType: "P" | "C",
   ): ParsedPayload | null {
-    const secret = process.env.QR_HMAC_SECRET;
-    if (
-      !secret ||
-      secret === "change-me" ||
-      secret.startsWith("replace-with-") ||
-      secret.length < 32
-    ) {
+    let secret: string;
+    try {
+      secret = getAppSecret("QR_HMAC_SECRET");
+    } catch {
       throw new ServiceUnavailableException(
-        "Set QR_HMAC_SECRET to a random value of at least 32 characters",
+        "Set QR_HMAC_SECRET to a private value of at least 32 characters",
       );
     }
     const parts = content.split(".");

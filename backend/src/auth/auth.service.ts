@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { compare } from "bcryptjs";
+import { getAppSecret } from "../config/secrets";
 import { PrismaService } from "../prisma/prisma.service";
 
 const userSelect = {
@@ -38,15 +39,12 @@ export class AuthService {
       throw new UnauthorizedException("Invalid email or password");
     }
 
-    const secret = process.env.JWT_SECRET;
-    if (
-      !secret ||
-      secret === "change-me" ||
-      secret.startsWith("replace-with-") ||
-      secret.length < 32
-    ) {
+    let secret: string;
+    try {
+      secret = getAppSecret("JWT_SECRET");
+    } catch {
       throw new ServiceUnavailableException(
-        "Set JWT_SECRET to a random value of at least 32 characters",
+        "Set JWT_SECRET to a private value of at least 32 characters",
       );
     }
 

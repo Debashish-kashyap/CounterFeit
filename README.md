@@ -2,7 +2,7 @@
 
 Layered verification against counterfeit drugs (and, later, adulterated food).
 
-> **Status:** Round 1 submission. This repository holds the project design and skeleton. Implementation is in progress.
+> **Status:** The MVP supply-chain workflow is implemented: signed QR registration, public pack checks, shipments, pharmacy receipts and sales, buyer reports, reconciliation, and a regulator dashboard. AI packaging checks and public testnet anchoring remain stretch goals.
 
 ## Problem
 Counterfeit medicines enter the supply chain, pharmacies cannot verify authenticity at the point of dispense, and records are too fragmented to trace suspicious batches. A QR code alone can be copied onto fake packs.
@@ -36,17 +36,25 @@ docs/         Architecture notes
 
 ## Run the database
 
-Copy `.env.example` to `.env` in the repository root, then start PostgreSQL:
+### Prerequisites
+
+- Node.js `20.19+`, `22.12+`, or `24+` (required by the Prisma version in the backend lockfile)
+- npm
+- Docker Desktop with Docker Compose
+
+Copy `.env.example` to `.env` in the repository root, then start PostgreSQL.
+For local development, the backend supplies built-in demo-only JWT and QR
+signing secrets, so no secret configuration is required:
 
 ```powershell
 Copy-Item .env.example .env
 docker compose up -d db
 ```
 
-From `backend/`, install dependencies and apply the initial schema migration:
+From `backend/`, install the locked dependencies and apply all schema migrations:
 
 ```powershell
-npm install
+npm ci
 npm run db:deploy
 npm run seed:reset
 npm run start:dev
@@ -56,8 +64,8 @@ Prisma reads the schema from `backend/prisma/schema.prisma`; later schema change
 should be applied through Prisma migrations. Use `npm run db:migrate -- --name
 <migration-name>` while developing schema changes. The seed command **deletes
 and recreates all application data** and refuses non-local database hosts, so
-use it only with a local demo database.
-Replace the placeholder `QR_HMAC_SECRET` in `.env` before seeding.
+use it only with a local demo database. The built-in secrets are public demo
+values and must never be used in production.
 
 The seed creates a manufacturer, two pharmacies (Guwahati and Mumbai), a
 regulator, two batches (including an expired batch), six cases, 60 signed packs,
@@ -80,7 +88,7 @@ The Next.js app uses the seeded demo accounts above and the backend API at
 
 ```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -120,9 +128,10 @@ refuses any remote host or database name other than `backend_integration_test`.
 
 ### Auth and manufacturer API
 
-Set both `JWT_SECRET` and `QR_HMAC_SECRET` in `.env` to different private,
-random values of at least 32 characters. Generate a value in PowerShell with
-the command below, and run it twice so each secret is different:
+Local development uses built-in demo secrets. Before any production deployment,
+set `JWT_SECRET` and `QR_HMAC_SECRET` to different private, random values of at
+least 32 characters. Generate a value in PowerShell with the command below,
+and run it twice so each secret is different:
 
 ```powershell
 node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64url'))"
