@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { UserRole } from "@prisma/client";
+import { getAppSecret } from "../config/secrets";
 import { AuthUser } from "./auth-user";
 
 interface JwtClaims {
@@ -34,13 +35,10 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     try {
-      const secret = process.env.JWT_SECRET;
-      if (
-        !secret ||
-        secret === "change-me" ||
-        secret.startsWith("replace-with-") ||
-        secret.length < 32
-      ) {
+      let secret: string;
+      try {
+        secret = getAppSecret("JWT_SECRET");
+      } catch {
         throw new UnauthorizedException("JWT_SECRET is not configured securely");
       }
       const claims = await this.jwtService.verifyAsync<JwtClaims>(token, {

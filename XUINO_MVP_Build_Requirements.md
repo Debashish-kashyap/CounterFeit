@@ -9,9 +9,9 @@
 
 **Must build (demo-critical)**
 1. Manufacturer registers a batch → system generates case, pack serials and signed QR codes
-2. Pharmacy scans a single pack → result: Genuine / Suspicious / Expired / Unknown
-3. Pharmacy scans a case code → all packs inside marked received (bulk check)
-4. Anomaly rules: repeat scans, impossible travel, case received at two places
+2. Anyone can check a pack without changing its state; pharmacies record sales separately
+3. Manufacturer ships a case to an expected pharmacy; that pharmacy records receipt
+4. Anomaly rules use conflicting custody facts, impossible travel, and pre-sale device/place signals, not repeat count alone
 5. Dashboard with scan log and suspicious-event list
 6. Hash-chained event log with a "verify chain integrity" button
 
@@ -95,6 +95,8 @@
 | status | enum | `CREATED`, `DISPATCHED`, `RECEIVED` |
 | received_by | FK users, nullable | |
 | received_at | timestamptz | |
+| expected_recipient_org_id | FK users, nullable | set when manufacturer ships the case |
+| shipped_at | timestamptz, nullable | |
 
 **packs**
 | Column | Type | Notes |
@@ -103,27 +105,40 @@
 | case_id | FK cases | |
 | serial | text unique | random 128-bit, hex |
 | signature | text | HMAC of payload |
-| status | enum | `ACTIVE`, `DISPENSED`, `FLAGGED` |
-| scan_count | int default 0 | |
+| status | enum | `ACTIVE`, `RECEIVED`, `SOLD` |
+| sold_by_org_id | FK users, nullable | |
+| sold_at | timestamptz, nullable | |
+| scan_count | int default 0 | legacy/analytics only; never flags from count |
 | first_scanned_at | timestamptz | |
 
 **scans** (every verification attempt, genuine or not)
 | Column | Type | Notes |
 |---|---|---|
 | id | uuid PK | |
-| scanned_by | FK users | |
+| scanned_by | FK users, nullable | public checks have no signed-in scanner |
 | target_type | enum | `PACK`, `CASE` |
+| action | enum | `CHECK`, `SALE`, `CASE_RECEIPT` |
 | serial_or_code | text | stored even if not found |
 | result | enum | `GENUINE`, `SUSPICIOUS`, `EXPIRED`, `UNKNOWN` |
-| reason | text | e.g. "scanned 4 times", "impossible travel" |
+| reason | text | conflict reason; repeated checks alone are not suspicious |
 | lat, lng | float | |
+| device_id, source_ip_hash | text, nullable | client device signal and hashed source IP |
+| created_at | timestamptz | |
+
+**consumer_reports**
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid PK | |
+| serial | text | referenced pack serial |
+| message | text | buyer-submitted report |
+| source_ip_hash | text, nullable | SHA-256 hash; never persist raw IP |
 | created_at | timestamptz | |
 
 **ledger_events** (hash-chained)
 | Column | Type | Notes |
 |---|---|---|
 | id | bigserial PK | order matters |
-| event_type | text | `BATCH_REGISTERED`, `CASE_RECEIVED`, `PACK_SCANNED`, `FLAGGED` |
+| event_type | text | includes `SHIPPED`, `PACK_CHECKED`, `PACK_SOLD`, `CASE_RECEIVED`, `BUYER_REPORT`, `FLAGGED` |
 | payload | jsonb | |
 | prev_hash | text | |
 | hash | text | SHA-256(prev_hash + event_type + payload + timestamp) |
@@ -165,11 +180,14 @@
 | GET | `/batches` | list own batches |
 | GET | `/batches/:id/qr` | returns all case and pack QR payloads (for download / print sheet) |
 
-**Verification (Pharmacy)**
+**Check, custody, and sale**
 | Method | Path | Description |
 |---|---|---|
-| POST | `/verify/pack` | body: `{ payload, lat, lng }`, returns single-check result |
-| POST | `/verify/case` | body: `{ payload, lat, lng }`, marks case and all child packs received, returns bulk result |
+| POST | `/verify/check` | Public `{ payload, lat?, lng?, deviceId? }`; logs a read-only check |
+| POST | `/shipments` | Manufacturer ships `{ caseCode, toOrgId }`; stores expected recipient and logs `SHIPPED` |
+| POST | `/cases/:code/receive` | Pharmacy-only receipt; transfers custody only to the shipped-to pharmacy |
+| POST | `/packs/:serial/sell` | Pharmacy-only billing action; records sold org/time and rejects re-sale |
+| POST | `/reports` | Public consumer report for a signed pack QR |
 
 **Regulator / dashboard**
 | Method | Path | Description |
@@ -178,6 +196,7 @@
 | GET | `/dashboard/scans` | paginated scan log with filters |
 | GET | `/dashboard/flagged` | suspicious events with reasons |
 | GET | `/dashboard/hotspots` | flagged scans grouped by location (lat/lng, count) |
+| GET | `/reports/reconciliation` | received vs sold packs per pharmacy; flags over-sales and out-of-chain sales |
 
 **Ledger**
 | Method | Path | Description |
@@ -198,40 +217,44 @@ QR content = payload + "." + signature
 - On every scan, **verify the HMAC first**. A bad signature returns `UNKNOWN` immediately, with reason "signature invalid".
 - Keep `HMAC_SECRET` in `.env`.
 
-### 3.4 Single check logic (`POST /verify/pack`)
+### 3.4 Public check and pharmacy sale
 ```
 1. Parse payload, verify HMAC            -> fail: UNKNOWN
 2. Look up pack by serial                -> not found: UNKNOWN
 3. Check batch expiry_date < today       -> EXPIRED
-4. Run anomaly rules (section 3.6)       -> any hit: SUSPICIOUS
+4. Run conflict rules (section 3.6)      -> any hit: SUSPICIOUS
 5. Otherwise                             -> GENUINE
-6. Increment scan_count, insert scans row, write PACK_SCANNED to ledger
-7. Also check: parent case's received_by matches the scanner's location
-   (the PPT's "parent case matches where it was delivered"); mismatch -> SUSPICIOUS
+6. Insert a CHECK event and append PACK_CHECKED; do not mutate pack state
+```
+`POST /verify/check` is public and repeatable. It never increments `scan_count`
+or flags a pack only because of scan count. A sold pack with no conflict is
+GENUINE and names its dispensing pharmacy and time. `POST /packs/:serial/sell`
+is a separate pharmacy-authenticated billing action. It stores `SOLD`,
+`sold_by_org_id`, and `sold_at`; a second attempt is SUSPICIOUS (`already sold`),
+and another pharmacy's attempt also reports
+`sold by a different org than the one claiming it`.
+
+### 3.5 Shipment and case receipt
+```
+1. Manufacturer sends POST /shipments { caseCode, toOrgId }
+2. Store expected_recipient_org_id and shipped_at; append SHIPPED
+3. Pharmacy sends POST /cases/:code/receive
+4. If not shipped to this pharmacy, return SUSPICIOUS ("outside intended chain")
+   and flag the attempting pharmacy without transferring custody
+5. Otherwise mark case and child packs received
+6. Append one CASE_RECEIVED custody event
 ```
 
-### 3.5 Bulk check logic (`POST /verify/case`)
-```
-1. Verify HMAC, find case                -> fail: UNKNOWN
-2. If case.status == RECEIVED and received_by != this user
-        -> SUSPICIOUS ("case received at two places"), flag case
-3. Else set case RECEIVED, received_by, received_at
-4. Mark all packs in case as received (single UPDATE ... WHERE case_id)
-5. Write ONE CASE_RECEIVED event to the ledger (the PPT's "one custody event")
-6. Return { packsReceived: N, batch, expiry, result }
-```
-
-### 3.6 Anomaly rules (`anomaly` service)
-Keep these as simple, readable rule functions that return `{ hit, reason }`:
+### 3.6 Conflict and rate-limit rules
 
 | Rule | Logic |
 |---|---|
-| Repeat scans | `scan_count` of a pack above a threshold (e.g. > 3), or same serial scanned by two different pharmacies |
-| Impossible travel | previous scan of same serial at location A, new scan at location B; if `distance(A,B) / time_gap` exceeds a max speed (e.g. 900 km/h) -> hit. Haversine formula. |
-| Case at two places | see 3.5 |
-| Unknown serial flood | many `UNKNOWN` scans from one user in a short window (optional) |
-
-For the demo, make the thresholds config constants so you can trigger them live.
+| Repeat checks | Never a flag by themselves; checks are rate-limited per source IP and per pack |
+| Impossible travel | Consecutive located pack events above 800 km/h -> `impossible travel` |
+| Pre-sale devices/places | Three or more distinct device IDs or places at least 10 km apart before sale -> suspicious |
+| Sale conflict | Re-sale -> `already sold`; another org also gets `sold by a different org than the one claiming it` |
+| Shipment/receipt conflict | Missing shipment or receipt by another org -> `outside intended chain` |
+| Stock reconciliation | Flag sold > received or packs sold by an org whose case was not shipped to it |
 
 ### 3.7 Ledger service
 ```
@@ -299,7 +322,7 @@ Run `append` inside the **same DB transaction** as the scan/case update.
 
 ### 5.1 MVP level (must build)
 - Hash-chained `ledger_events` table in Postgres (section 2 and 3.7)
-- Events logged: `BATCH_REGISTERED`, `CASE_RECEIVED`, `PACK_SCANNED`, `FLAGGED`
+- Events logged: `BATCH_REGISTERED`, `SHIPPED`, `CASE_RECEIVED`, `PACK_CHECKED`, `PACK_SOLD`, and `FLAGGED` when a conflict is detected
 - `/ledger/verify` endpoint and the UI button
 - **Demo moment:** manually edit one row in the DB, click "Verify chain", show the red "tampered at event #N" result
 
@@ -342,9 +365,10 @@ QR codes generated and printed on packs / cases
         |
         v
 Pharmacy receives delivery
-   |-- scans CASE QR  -> /verify/case -> all packs received, 1 custody event
-   |-- scans PACK QR  -> /verify/pack -> HMAC check -> registry lookup
-                                      -> expiry check -> anomaly rules
+   |-- manufacturer ships case -> /shipments -> SHIPPED event + expected recipient
+   |-- pharmacy receives case -> /cases/:code/receive -> receipt + child packs received
+   |-- anyone checks pack -> /verify/check -> HMAC -> expiry/conflict rules
+   |-- pharmacy sells pack -> /packs/:serial/sell -> SOLD state + sale event
         |
         v
 Result: GENUINE / SUSPICIOUS / EXPIRED / UNKNOWN
@@ -358,12 +382,12 @@ Regulator dashboard: summary, flagged events, hotspots, ledger integrity
 
 ### 7.2 Request flow (single check)
 ```
-Browser (ZXing) -> POST /verify/pack {payload, lat, lng}
+Browser (ZXing) -> POST /verify/check {payload, lat, lng, deviceId}
   NestJS: verify HMAC -> query packs/batches (Postgres)
-        -> AnomalyService.check(pack, scanner, lat, lng)
-        -> insert scans row + increment scan_count
-        -> LedgerService.append(PACK_SCANNED)   [same transaction]
-  <- { result, reason, batch, expiry, scanCount }
+        -> evaluate conflicting facts, not repeated check count
+        -> insert CHECK row without changing pack state
+        -> LedgerService.append(PACK_CHECKED)   [same transaction]
+  <- { result, reasons, batch, expiry, sold }
 ```
 ---
 
@@ -375,7 +399,7 @@ Suggested split for the 3 members (Backend/AI lead, Frontend/UI, Research/Docs).
 |---|---|---|---|
 | 0 to 1 | Repo, Docker Postgres, NestJS scaffold, DB schema, seed script | Next.js + Tailwind scaffold, PWA config, layout | Finalize demo script, test data list |
 | 1 to 3 | Auth + roles, batch creation, serial/HMAC/QR payload generation | Login, manufacturer pages, batch form, QR grid | README, architecture diagram from PPT |
-| 3 to 5 | `/verify/pack`, `/verify/case`, scans table | Scanner page + result cards (with paste/upload fallback) | Record screenshots as backup |
+| 3 to 5 | `/verify/check`, `/shipments`, case receipt, sale, scans table | Scanner page + result cards (with paste/upload fallback) | Record screenshots as backup |
 | 5 to 7 | Anomaly rules, ledger service, `/ledger/verify`, dashboard endpoints | Dashboard, flagged list, ledger page, geolocation | Prepare pitch slides and talking points |
 | 7 to 8.5 | Merkle roots; start AI service or testnet anchor (stretch) | Hotspot map, polish, error states | Rehearse demo end to end |
 | 8.5 to 10 | **Feature freeze.** Bug fixes, deploy / ngrok, reset seed data | UI polish, test on a real phone | Final rehearsal, backup screen recording |
@@ -389,7 +413,7 @@ Suggested split for the 3 members (Backend/AI lead, Frontend/UI, Research/Docs).
 
 ## 9. Pre-Hackathon Checklist
 
-- [ ] Node 20+, Docker, Postgres image pulled, Python 3.11 (if doing AI)
+- [ ] Node.js 20.19+ (or 22.12+/24+), npm; Docker/Postgres are optional when using the Windows no-Docker demo launcher; Python 3.11 (only if doing AI)
 - [ ] Repo cloned, `/frontend`, `/backend`, `/ai-service` folders and `.env.example` ready
 - [ ] Packages pre-installed once (so the hackathon Wi-Fi is not the bottleneck): `@nestjs/*`, `prisma`/`typeorm`, `bcrypt`, `@zxing/browser`, `qrcode`, `next-pwa`, `leaflet`, `ethers`
 - [ ] Testnet wallet funded, RPC key saved (only if attempting anchoring)
@@ -404,7 +428,7 @@ Suggested split for the 3 members (Backend/AI lead, Frontend/UI, Research/Docs).
 - [ ] A manufacturer can register a batch and download QR codes
 - [ ] A pharmacy can scan a single pack and get one of four results with a reason
 - [ ] A pharmacy can scan a case and mark all its packs received with one custody event
-- [ ] Repeat-scan, impossible-travel and double-received-case rules each trigger on demand
+- [ ] Conflicting-fact rules trigger on demand: repeat scans alone do not flag a pack; repeat sales, out-of-chain receipts or sales, impossible travel, and multiple distinct pre-sale devices or places can be flagged
 - [ ] The dashboard shows summary, scan log and flagged events
 - [ ] The ledger verify button detects a manually tampered row
 - [ ] The whole flow runs from a phone browser as an installable PWA

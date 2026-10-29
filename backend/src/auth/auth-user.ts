@@ -8,5 +8,6 @@ export interface AuthUser {
 
 export interface AuthenticatedRequest {
   headers: { authorization?: string };
+  ip?: string;
   user: AuthUser;
 }

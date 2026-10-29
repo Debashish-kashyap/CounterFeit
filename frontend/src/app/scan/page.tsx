@@ -4,13 +4,17 @@ import { Camera, CircleAlert, CircleCheck, LoaderCircle, MapPin, ScanLine, Shiel
 import { useState, type FormEvent } from "react";
 import { QrInput } from "@/components/qr-input";
 import { apiRequest } from "@/lib/api";
-import { addScanHistoryItem } from "@/lib/scan-history";
+import { addScanHistoryItem, getVerificationDeviceId } from "@/lib/scan-history";
 import { useSession } from "@/lib/session";
 
 type Verification = {
   result: "GENUINE" | "SUSPICIOUS" | "EXPIRED" | "UNKNOWN";
+  reasons: string[];
   reason: string | null;
-  scanCount?: number | null;
+  message?: string | null;
+  sold?: boolean;
+  soldAt?: string | null;
+  soldBy?: { id: string; name: string };
   packsReceived?: number;
   batch: { drugName: string; batchNumber: string } | null;
   expiry: string | null;
@@ -65,6 +69,9 @@ export default function ScanPage() {
   const [verifiedType, setVerifiedType] = useState<"PACK" | "CASE" | null>(null);
   const [verifiedCode, setVerifiedCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [saleBusy, setSaleBusy] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportNotice, setReportNotice] = useState("");
   const [error, setError] = useState("");
   const detectedType = detectType(payload.trim());
   const targetType = manualType === "AUTO" ? detectedType : manualType;
@@ -80,11 +87,24 @@ export default function ScanPage() {
     setResult(null);
     try {
       const location = await getCoordinates();
-      const body = { payload: payload.trim(), ...(location ?? {}) };
+      const body = {
+        deviceId: getVerificationDeviceId(),
+        payload: payload.trim(),
+        ...(location ?? {}),
+      };
+      const eventBody = {
+        deviceId: body.deviceId,
+        ...(location ?? {}),
+      };
       const verified = await apiRequest<Verification>(
-        `/verify/${targetType === "PACK" ? "pack" : "case"}`,
-        token,
-        { method: "POST", body: JSON.stringify(body) },
+        targetType === "PACK"
+          ? "/verify/check"
+          : `/cases/${encodeURIComponent(qrIdentity(payload.trim()))}/receive`,
+        targetType === "CASE" ? token ?? undefined : undefined,
+        {
+          method: "POST",
+          body: JSON.stringify(targetType === "CASE" ? eventBody : body),
+        },
       );
       setResult(verified);
       const createdAt = new Date().toISOString();
@@ -97,7 +117,7 @@ export default function ScanPage() {
         targetType,
         code,
         result: verified.result,
-        reason: verified.reason,
+        reason: verified.reasons?.join("; ") || verified.reason,
         createdAt,
         batchName: verified.batch
           ? `${verified.batch.drugName} · ${verified.batch.batchNumber}`
@@ -110,6 +130,52 @@ export default function ScanPage() {
     }
   }
 
+  async function completeSale() {
+    if (!token || !verifiedCode) return;
+    setSaleBusy(true);
+    setError("");
+    try {
+      const location = await getCoordinates();
+      const sold = await apiRequest<Verification>(
+        `/packs/${encodeURIComponent(verifiedCode)}/sell`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            deviceId: getVerificationDeviceId(),
+            ...(location ?? {}),
+          }),
+        },
+      );
+      setResult(sold);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to record sale");
+    } finally {
+      setSaleBusy(false);
+    }
+  }
+
+  async function reportPurchase() {
+    if (!payload.trim()) return;
+    setReportBusy(true);
+    setError("");
+    setReportNotice("");
+    try {
+      await apiRequest("/reports", undefined, {
+        method: "POST",
+        body: JSON.stringify({
+          payload: payload.trim(),
+          message: "I bought this elsewhere",
+        }),
+      });
+      setReportNotice("Your report was recorded.");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to submit report");
+    } finally {
+      setReportBusy(false);
+    }
+  }
+
   function scanAnother() {
     setPayload("");
     setResult(null);
@@ -117,6 +183,7 @@ export default function ScanPage() {
     setVerifiedType(null);
     setVerifiedCode("");
     setError("");
+    setReportNotice("");
   }
 
   const resultIcon = result?.result === "GENUINE" ? CircleCheck : result?.result === "SUSPICIOUS" ? ShieldAlert : CircleAlert;
@@ -140,16 +207,19 @@ export default function ScanPage() {
             <div><label htmlFor="qr-type">Code type</label><select id="qr-type" value={manualType} onChange={(event) => setManualType(event.target.value as "AUTO" | "PACK" | "CASE")}><option value="AUTO">Detect automatically</option><option value="PACK">Single pack</option><option value="CASE">Case delivery</option></select></div>
             <div className="detected-type"><span>DETECTED</span><b>{targetType ?? "—"}</b></div>
           </div>
-          <button className="button button-primary form-submit" type="submit" disabled={busy || !payload.trim()}>{busy ? <LoaderCircle className="spin" size={17} /> : <ScanLine size={17} />}{targetType === "CASE" ? "Record case receipt" : "Verify pack"}</button>
-          <div className="location-note"><MapPin size={15} /><span>Location is shared when available; otherwise your registered pharmacy location is used.</span></div>
+          <button className="button button-primary form-submit" type="submit" disabled={busy || !payload.trim()}>{busy ? <LoaderCircle className="spin" size={17} /> : <ScanLine size={17} />}{targetType === "CASE" ? "Record case receipt" : "Check pack"}</button>
+          <div className="location-note"><MapPin size={15} /><span>Checks are read-only; record a sale separately at billing. Location is shared when available.</span></div>
         </form>
 
         <section className={`section-block result-panel ${result ? `result-panel-${result.result.toLowerCase()}` : ""}`} aria-live="polite">
           <div className="section-heading"><div><span className="eyebrow">VERIFICATION RESULT</span><h2>{result ? result.result : "Awaiting scan"}</h2></div>{result ? <ResultIcon size={21} /> : <ShieldCheck size={20} />}</div>
           {result ? <>
             <div className="result-metadata"><span>{verifiedType} · {verifiedCode}</span><time>{verifiedAt ? new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(verifiedAt)) : ""}</time></div>
-            <p className="result-reason">{result.reason || "No anomalies detected for this verification."}</p>
-            {result.batch && <dl className="result-details"><div><dt>Medicine</dt><dd>{result.batch.drugName}</dd></div><div><dt>Batch</dt><dd>{result.batch.batchNumber}</dd></div>{result.expiry && <div><dt>Expiry</dt><dd>{expiryLabel(result.expiry)}</dd></div>}{typeof result.scanCount === "number" && <div><dt>Pack scans</dt><dd>{result.scanCount}</dd></div>}{typeof result.packsReceived === "number" && <div><dt>Packs received</dt><dd>{result.packsReceived}</dd></div>}</dl>}
+            <p className="result-reason">{result.message || result.reasons?.join("; ") || result.reason || "No conflicts detected."}</p>
+            {result.batch && <dl className="result-details"><div><dt>Medicine</dt><dd>{result.batch.drugName}</dd></div><div><dt>Batch</dt><dd>{result.batch.batchNumber}</dd></div>{result.expiry && <div><dt>Expiry</dt><dd>{expiryLabel(result.expiry)}</dd></div>}{typeof result.packsReceived === "number" && <div><dt>Packs received</dt><dd>{result.packsReceived}</dd></div>}</dl>}
+            {verifiedType === "PACK" && result.result === "GENUINE" && !result.sold && <button className="button button-primary scan-another" type="button" onClick={() => void completeSale()} disabled={saleBusy}>{saleBusy ? <LoaderCircle className="spin" size={17} /> : <CircleCheck size={17} />}Complete sale</button>}
+            {verifiedType === "PACK" && <button className="button button-quiet scan-another" type="button" onClick={() => void reportPurchase()} disabled={reportBusy}>{reportBusy ? <LoaderCircle className="spin" size={17} /> : <CircleAlert size={17} />}I bought this elsewhere</button>}
+            {reportNotice && <p className="custody-confirmation">{reportNotice}</p>}
             {verifiedType === "CASE" && result.result === "GENUINE" && result.reason !== "case already received by this pharmacy" && <p className="custody-confirmation"><CircleCheck size={16} />One custody event recorded.</p>}
             {(result.result === "SUSPICIOUS" || result.result === "UNKNOWN") && <p className="review-advice">Hold the medicine for review and follow your pharmacy’s escalation process.</p>}
             <button className="button button-quiet scan-another" type="button" onClick={scanAnother}>Scan another</button>

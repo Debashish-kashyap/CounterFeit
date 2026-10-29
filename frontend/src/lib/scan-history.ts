@@ -9,6 +9,21 @@ export type ScanHistoryItem = {
 };
 
 export const SCAN_HISTORY_KEY = "counterfeit-pharmacy-scan-history";
+const DEVICE_ID_KEY = "counterfeit-verification-device-id";
+let temporaryDeviceId: string | null = null;
+
+export function getVerificationDeviceId(): string {
+  try {
+    const existing = window.localStorage.getItem(DEVICE_ID_KEY);
+    if (existing) return existing;
+    const deviceId = window.crypto.randomUUID();
+    window.localStorage.setItem(DEVICE_ID_KEY, deviceId);
+    return deviceId;
+  } catch {
+    temporaryDeviceId ??= window.crypto.randomUUID();
+    return temporaryDeviceId;
+  }
+}
 
 export function getScanHistory(): ScanHistoryItem[] {
   try {

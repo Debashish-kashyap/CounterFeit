@@ -1,5 +1,6 @@
 import { Injectable, ServiceUnavailableException } from "@nestjs/common";
 import { createHmac } from "node:crypto";
+import { getAppSecret } from "../config/secrets";
 
 export type QrTargetType = "P" | "C";
 
@@ -12,15 +13,12 @@ export interface SignedQrPayload {
 @Injectable()
 export class QrPayloadService {
   create(type: QrTargetType, serialOrCode: string): SignedQrPayload {
-    const secret = process.env.QR_HMAC_SECRET;
-    if (
-      !secret ||
-      secret === "change-me" ||
-      secret.startsWith("replace-with-") ||
-      secret.length < 32
-    ) {
+    let secret: string;
+    try {
+      secret = getAppSecret("QR_HMAC_SECRET");
+    } catch {
       throw new ServiceUnavailableException(
-        "Set QR_HMAC_SECRET to a random value of at least 32 characters",
+        "Set QR_HMAC_SECRET to a private value of at least 32 characters",
       );
     }
 

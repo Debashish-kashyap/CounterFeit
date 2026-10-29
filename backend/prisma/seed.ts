@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { config as loadEnv } from "dotenv";
+import { getAppSecret } from "../src/config/secrets";
 import { hash } from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import {
@@ -17,7 +18,6 @@ import { Pool } from "pg";
 loadEnv({ path: resolve(process.cwd(), "../.env") });
 
 const connectionString = process.env.DATABASE_URL;
-const configuredHmacSecret = process.env.QR_HMAC_SECRET;
 
 if (!connectionString) {
   throw new Error("DATABASE_URL must be set before seeding the database");
@@ -28,17 +28,7 @@ if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(databaseHost)) {
     `Refusing to reset non-local database host "${databaseHost}". Seed only a local demo database.`,
   );
 }
-if (
-  !configuredHmacSecret ||
-  configuredHmacSecret === "change-me" ||
-  configuredHmacSecret.startsWith("replace-with-") ||
-  configuredHmacSecret.length < 32
-) {
-  throw new Error(
-    "Set QR_HMAC_SECRET to a random value of at least 32 characters before seeding",
-  );
-}
-const hmacSecret: string = configuredHmacSecret;
+const hmacSecret = getAppSecret("QR_HMAC_SECRET");
 
 const pool = new Pool({ connectionString });
 const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
@@ -213,6 +203,8 @@ async function main(): Promise<void> {
             status: received ? CaseStatus.RECEIVED : CaseStatus.CREATED,
             receivedBy: received ? guwahatiPharmacy.id : null,
             receivedAt: received ? now : null,
+            expectedRecipientOrgId: received ? guwahatiPharmacy.id : null,
+            shippedAt: received ? now : null,
           },
         });
         const packs = Array.from({ length: 10 }, () => {
@@ -227,6 +219,17 @@ async function main(): Promise<void> {
         await tx.pack.createMany({ data: packs });
 
         if (received) {
+          await appendSeedEvent(
+            tx,
+            "SHIPPED",
+            {
+              caseId: createdCase.id,
+              caseCode: createdCase.caseCode,
+              fromOrgId: manufacturer.id,
+              toOrgId: guwahatiPharmacy.id,
+            },
+            now,
+          );
           await appendSeedEvent(
             tx,
             "CASE_RECEIVED",

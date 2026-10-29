@@ -9,16 +9,12 @@ import {
   Min,
 } from "class-validator";
 
-export class VerifyQrDto {
-  @ApiProperty({
-    type: String,
-    description: "Complete QR value: base64url payload followed by its HMAC signature",
-    example: "eyJ0IjoiUCIsInMiOiIwMDEyMzQ1Njc4OWFiY2RlZiIsInYiOjF9.<signature>",
-    maxLength: 2048,
-  })
+export class RecordEventDto {
+  @ApiProperty({ type: String, required: false, maxLength: 128 })
+  @IsOptional()
   @IsString()
-  @MaxLength(2048)
-  payload!: string;
+  @MaxLength(128)
+  deviceId?: string;
 
   @ApiProperty({ type: Number, required: false, minimum: -90, maximum: 90 })
   @IsOptional()

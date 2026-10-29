@@ -1,20 +1,17 @@
 # CounterFeit
 
-Layered verification against counterfeit drugs (and, later, adulterated food).
+Medicine supply-chain verification using signed QR codes, custody records, and
+a tamper-evident event ledger.
 
-> **Status:** Round 1 submission. This repository holds the project design and skeleton. Implementation is in progress.
+## Run the demo on Windows (no Docker)
 
-## Problem
-Counterfeit medicines enter the supply chain, pharmacies cannot verify authenticity at the point of dispense, and records are too fragmented to trace suspicious batches. A QR code alone can be copied onto fake packs.
+### Requirements
 
-## Solution: five layers
-1. **Unit-level QR:** one unique, signed serial per pack
-2. **Bulk scanning:** case and pallet codes to check a delivery in one scan
-3. **Scan-anomaly engine:** repeat scans and impossible travel between locations
-4. **AI packaging check:** image similarity and OCR, reported as a suspicion score
-5. **Tamper-evident ledger:** hash-chained custody events
+- 64-bit Windows
+- Node.js `20.19+`, `22.12+`, or `24+`
+- Internet access the first time you run the demo
 
-Hierarchy: `API lot -> Batch -> Pallet -> Case -> Pack`
+### Start
 
 ## Planned stack
 | Part | Choice |
@@ -72,113 +69,81 @@ and sample scan/ledger events. All demo accounts use `DemoPass123!`:
 | TestDebug | `a@b`| pass: 123|
 The initial backend exposes `GET http://localhost:3001/health` and Swagger UI
 at `http://localhost:3001/docs`.
+1. Download and extract the repository ZIP from GitHub.
+2. Open the extracted project folder.
+3. Double-click **`start-demo.cmd`**.
 
-### Frontend
+The launcher installs the project dependencies and a portable PostgreSQL
+runtime, starts the database, applies migrations, loads demo data, and opens
+the app. You do not need to install Docker or PostgreSQL, create a `.env` file,
+or configure secrets.
 
-The Next.js app uses the seeded demo accounts above and the backend API at
-`http://localhost:3001` by default. To run it in a second terminal:
+The first run downloads about 100 MB of PostgreSQL files and may take a few
+minutes. Later starts reuse the download and database files, but reset the demo
+application data.
 
-```powershell
-cd frontend
-npm install
-npm run dev
-```
+### Sign in
 
-Open `http://localhost:3000`. To use another API host, set
-`NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.local` (copy from
-`frontend/.env.example`). The first UI pass
-includes role-based sign-in, a regulator overview and ledger, manufacturer
-batch registration with signed QR payloads, and pharmacy pack/case checks.
-Pharmacy scan history is stored in the current browser because the backend
-does not yet expose a pharmacy-scoped history endpoint.
+All demo accounts use this password: `DemoPass123!`
 
-### Backend integration tests
+| Role | Email |
+|---|---|
+| Manufacturer | `manufacturer@xuino.demo` |
+| Pharmacy — Guwahati | `pharmacy.guwahati@xuino.demo` |
+| Pharmacy — Mumbai | `pharmacy.mumbai@xuino.demo` |
+| Regulator | `regulator@xuino.demo` |
 
-The backend integration suite starts the real NestJS app and tests auth, role
-checks, batch/QR creation, pack and case verification, anomaly outcomes,
-dashboard filters, and ledger tamper detection. It **truncates all application
-tables** before each run, so it only accepts a dedicated local database named
-`backend_integration_test`.
+Open the app at [http://localhost:3000](http://localhost:3000). The API and
+interactive API documentation are at [http://localhost:3001/docs](http://localhost:3001/docs).
 
-Create that database once (change the Postgres user if you customized it):
+### Stop
 
-```powershell
-docker compose exec -T db psql -U veripack -d postgres -c "CREATE DATABASE backend_integration_test;"
-```
+Run **`stop-demo.cmd`** to stop the local database. Close the backend and
+frontend terminal windows to stop the app.
 
-Then from `backend/`, point both migration and test commands at that database:
+## Demo workflow
 
-```powershell
-$env:DATABASE_URL = "postgresql://veripack:veripack@localhost:5432/backend_integration_test?schema=public"
-npm run db:deploy
-$env:TEST_DATABASE_URL = $env:DATABASE_URL
-npm test
-```
+1. Sign in as the manufacturer, register a batch, and print its signed QR codes.
+2. Record a shipment to a pharmacy.
+3. Sign in as that pharmacy, receive the case, check a pack, and record its sale.
+4. Sign in as the regulator to review scans, suspicious activity, stock
+   reconciliation, and ledger integrity.
 
-Use your local Postgres credentials in the connection URL. The test runner
-refuses any remote host or database name other than `backend_integration_test`.
+Checking a pack is public and read-only. Repeated checks alone do not flag it;
+sales are recorded separately by a pharmacy.
 
-### Auth and manufacturer API
+## What is included
 
-Set both `JWT_SECRET` and `QR_HMAC_SECRET` in `.env` to different private,
-random values of at least 32 characters. Generate a value in PowerShell with
-the command below, and run it twice so each secret is different:
+- Manufacturer batch registration and signed pack/case QR codes
+- Public pack checks, shipments, pharmacy receipts, and sales
+- Buyer reports and suspicious-activity rules
+- Regulator dashboard, pharmacy stock reconciliation, and hash-chained ledger
+- Browser-based QR scanning and printable QR sheets
 
-```powershell
-node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64url'))"
-```
+AI packaging checks and public testnet anchoring are not implemented; they are
+stretch goals.
 
-Sign in at `POST /auth/login` with a seeded email and `DemoPass123!`; send the
-returned `access_token` as `Authorization: Bearer <token>`. `GET /auth/me`
-returns the current user's safe profile.
+## Optional developer setup with Docker
 
-Manufacturer-only endpoints:
+The Windows launcher is the recommended evaluator path. Developers may use
+Docker Compose for PostgreSQL instead:
 
-- `POST /batches` with `drugName`, `batchNumber`, `mfgDate`, `expiryDate`,
-  `numCases` (1-50), and `packsPerCase` (1-100).
-- `GET /batches` to list the signed-in manufacturer's batches.
-- `GET /batches/:id/qr` to retrieve signed QR content for every case and pack.
+1. Copy `.env.example` to `.env` in the project root.
+2. Start the database with `docker compose up -d db`.
+3. In `backend/`, run `npm ci`, `npm run db:deploy`,
+   `npm run seed:reset`, and `npm run start:dev`.
+4. In another terminal, enter `frontend/` and run `npm ci` and `npm run dev`.
 
-Creating a batch writes the batch, cases, packs, and `BATCH_REGISTERED` ledger
-event atomically. QR values use the documented base64url JSON payload plus an
-HMAC signature.
+The seed command replaces application data. Use it only with a local demo
+database.
 
-### Pharmacy verification API
+## Tests
 
-Sign in as a pharmacy and pass its bearer token to:
+The backend integration tests require a dedicated local PostgreSQL database
+named `backend_integration_test`. The test runner clears its tables, so do not
+point it at a database containing data you need.
 
-- `POST /verify/case` with `{ "payload": "<case QR content>", "lat": 26.14,
-  "lng": 91.73 }` to record receipt of a case. Repeating receipt at the same
-  pharmacy is idempotent; another pharmacy scanning that received case gets a
-  `SUSPICIOUS` result.
-- `POST /verify/pack` with `{ "payload": "<pack QR content>", "lat": 26.14,
-  "lng": 91.73 }` to verify one pack.
+## Production warning
 
-Both coordinates are optional, but must be provided together. QR scans are
-recorded, including unknown or invalid QR attempts. Pack verification checks
-expiry, repeat scans, scans at other pharmacies, impossible travel (900 km/h
-threshold), and whether the parent case was received by the scanning pharmacy.
-Suspicious pack scans flag the pack and append ledger events in the same
-transaction as the scan record.
-
-Verification results include `GENUINE`, `SUSPICIOUS`, `EXPIRED`, or `UNKNOWN`.
-If GPS coordinates are omitted, the API uses the pharmacy's registered
-coordinates when available. Receiving a case also updates its active child
-packs to `RECEIVED` in the same transaction.
-
-### Regulator dashboard and ledger API
-
-Sign in as `regulator@xuino.demo` and authorize Swagger with the returned JWT.
-Regulator-only endpoints:
-
-- `GET /dashboard/summary` returns counts for all scans and each result.
-- `GET /dashboard/scans?page=1&limit=50` returns a paginated scan log.
-  Optional filters: `result`, `targetType`, `from`, and `to` (ISO dates).
-- `GET /dashboard/flagged?page=1&limit=50` returns suspicious scans and reasons.
-- `GET /dashboard/hotspots` groups suspicious scans with coordinates.
-- `GET /ledger/events?limit=50` returns recent events and their hashes.
-- `GET /ledger/verify` recomputes the chain and reports the first broken event
-  id, if any.
-
-## Team
-See [TEAM_ROLES.md](TEAM_ROLES.md).
+The built-in JWT and QR signing secrets are public demo values. Never deploy
+with them; configure private production secrets and use a production database.
