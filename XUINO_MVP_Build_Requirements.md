@@ -413,7 +413,7 @@ Suggested split for the 3 members (Backend/AI lead, Frontend/UI, Research/Docs).
 
 ## 9. Pre-Hackathon Checklist
 
-- [ ] Node.js 20.19+ (or 22.12+/24+), npm, Docker, Postgres image pulled, Python 3.11 (only if doing AI)
+- [ ] Node.js 20.19+ (or 22.12+/24+), npm; Docker/Postgres are optional when using the Windows no-Docker demo launcher; Python 3.11 (only if doing AI)
 - [ ] Repo cloned, `/frontend`, `/backend`, `/ai-service` folders and `.env.example` ready
 - [ ] Packages pre-installed once (so the hackathon Wi-Fi is not the bottleneck): `@nestjs/*`, `prisma`/`typeorm`, `bcrypt`, `@zxing/browser`, `qrcode`, `next-pwa`, `leaflet`, `ethers`
 - [ ] Testnet wallet funded, RPC key saved (only if attempting anchoring)

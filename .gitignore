@@ -1,4 +1,5 @@
 node_modules/
+/.local-demo/
 /backend/dist/
 /backend/*.tsbuildinfo
 /frontend/*.tsbuildinfo
