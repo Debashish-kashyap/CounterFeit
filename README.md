@@ -13,65 +13,9 @@ a tamper-evident event ledger.
 
 ### Start
 
-## Planned stack
-| Part | Choice |
-|---|---|
-| Frontend | Next.js (TypeScript), Tailwind, PWA, ZXing scanner |
-| Backend | Node.js (NestJS) REST API, JWT roles |
-| Database | PostgreSQL |
-| AI service | Python FastAPI (image embeddings + OCR) |
-| Ledger | Hash-chained event log, Merkle root anchoring (Hyperledger Fabric for production) |
-
-## Structure
-```
-frontend/     Next.js PWA: scan, dashboard, manufacturer pages
-backend/      NestJS REST API, Prisma schema and feature modules
-ai-service/   FastAPI service for packaging check
-ledger/       Hash-chain design notes and utilities
-docs/         Architecture notes
-```
-
-## Run the database
-
-Copy `.env.example` to `.env` in the repository root, then start PostgreSQL:
-
-```powershell
-Copy-Item .env.example .env
-docker compose up -d db
-```
-
-From `backend/`, install dependencies and apply the initial schema migration:
-
-```powershell
-npm install
-npm run db:deploy
-npm run seed:reset
-npm run start:dev
-```
-
-Prisma reads the schema from `backend/prisma/schema.prisma`; later schema changes
-should be applied through Prisma migrations. Use `npm run db:migrate -- --name
-<migration-name>` while developing schema changes. The seed command **deletes
-and recreates all application data** and refuses non-local database hosts, so
-use it only with a local demo database.
-Replace the placeholder `QR_HMAC_SECRET` in `.env` before seeding.
-
-The seed creates a manufacturer, two pharmacies (Guwahati and Mumbai), a
-regulator, two batches (including an expired batch), six cases, 60 signed packs,
-and sample scan/ledger events. All demo accounts use `DemoPass123!`:
-
-| Role | Email |
-|---|---|
-| Manufacturer | `manufacturer@xuino.demo` |
-| Pharmacy (Guwahati) | `pharmacy.guwahati@xuino.demo` |
-| Pharmacy (Mumbai) | `pharmacy.mumbai@xuino.demo` |
-| Regulator | `regulator@xuino.demo` |
-| TestDebug | `a@b`| pass: 123|
-The initial backend exposes `GET http://localhost:3001/health` and Swagger UI
-at `http://localhost:3001/docs`.
 1. Download and extract the repository ZIP from GitHub.
 2. Open the extracted project folder.
-3. Double-click **`start-demo.cmd`**.
+3. run **`start-demo.cmd`**.
 
 The launcher installs the project dependencies and a portable PostgreSQL
 runtime, starts the database, applies migrations, loads demo data, and opens
