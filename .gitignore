@@ -1,6 +1,7 @@
 node_modules/
 /backend/dist/
 /backend/*.tsbuildinfo
+/frontend/*.tsbuildinfo
 .next/
 .env
 __pycache__/

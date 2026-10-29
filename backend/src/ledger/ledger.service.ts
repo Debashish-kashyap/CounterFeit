@@ -23,6 +23,30 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(normalize(value));
 }
 
+export function computeMerkleRoot(eventHashes: readonly string[]): string {
+  if (eventHashes.length === 0) {
+    throw new Error("Cannot compute a Merkle root without events");
+  }
+
+  let level: Uint8Array[] = eventHashes.map((eventHash) =>
+    createHash("sha256").update(eventHash).digest(),
+  );
+
+  while (level.length > 1) {
+    const nextLevel: Uint8Array[] = [];
+    for (let index = 0; index < level.length; index += 2) {
+      const left = level[index];
+      const right = level[index + 1] ?? left;
+      nextLevel.push(
+        createHash("sha256").update(Buffer.concat([left, right])).digest(),
+      );
+    }
+    level = nextLevel;
+  }
+
+  return Buffer.from(level[0]).toString("hex");
+}
+
 @Injectable()
 export class LedgerService {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
@@ -56,6 +80,55 @@ export class LedgerService {
       take: limit,
     });
     return events.map((event) => ({ ...event, id: event.id.toString() }));
+  }
+
+  async recentAnchors(limit: number) {
+    const anchors = await this.prisma.merkleAnchor.findMany({
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+    return anchors.map((anchor) => ({
+      ...anchor,
+      fromEventId: anchor.fromEventId.toString(),
+      toEventId: anchor.toEventId.toString(),
+    }));
+  }
+
+  async createMerkleAnchor(limit: number) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(81025001)`;
+      const previousAnchor = await tx.merkleAnchor.findFirst({
+        orderBy: { toEventId: "desc" },
+        select: { toEventId: true },
+      });
+      const events = await tx.ledgerEvent.findMany({
+        where: previousAnchor
+          ? { id: { gt: previousAnchor.toEventId } }
+          : undefined,
+        orderBy: { id: "asc" },
+        take: limit,
+        select: { id: true, hash: true },
+      });
+
+      if (events.length === 0) {
+        return null;
+      }
+
+      const anchor = await tx.merkleAnchor.create({
+        data: {
+          fromEventId: events[0].id,
+          toEventId: events[events.length - 1].id,
+          merkleRoot: computeMerkleRoot(events.map((event) => event.hash)),
+        },
+      });
+
+      return {
+        ...anchor,
+        fromEventId: anchor.fromEventId.toString(),
+        toEventId: anchor.toEventId.toString(),
+        eventCount: events.length,
+      };
+    });
   }
 
   async verifyChain(): Promise<{
