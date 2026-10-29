@@ -26,6 +26,7 @@ enum PackStatus {
   ACTIVE
   RECEIVED
   DISPENSED
+  SOLD
   FLAGGED
 
   @@map("pack_status")
@@ -38,6 +39,14 @@ enum ScanTargetType {
   @@map("scan_target_type")
 }
 
+enum ScanAction {
+  CHECK
+  SALE
+  CASE_RECEIPT
+
+  @@map("scan_action")
+}
+
 enum ScanResult {
   GENUINE
   SUSPICIOUS
@@ -48,24 +57,26 @@ enum ScanResult {
 }
 
 model User {
-  id            String    @id @default(uuid()) @db.Uuid
-  name          String
-  email         String    @unique
-  passwordHash  String    @map("password_hash")
-  role          UserRole
-  locationName  String?   @map("location_name")
-  lat           Float?    @db.DoublePrecision
-  lng           Float?    @db.DoublePrecision
-  manufacturedBatches Batch[] @relation("BatchManufacturer")
-  receivedCases Case[]   @relation("CaseReceiver")
-  scans         Scan[]
+  id                  String   @id @default(uuid()) @db.Uuid
+  name                String
+  email               String   @unique
+  passwordHash        String   @map("password_hash")
+  role                UserRole
+  locationName        String?  @map("location_name")
+  lat                 Float?   @db.DoublePrecision
+  lng                 Float?   @db.DoublePrecision
+  manufacturedBatches Batch[]  @relation("BatchManufacturer")
+  receivedCases       Case[]   @relation("CaseReceiver")
+  expectedCases       Case[]   @relation("CaseExpectedRecipient")
+  soldPacks           Pack[]   @relation("PackSeller")
+  scans               Scan[]
 
   @@map("users")
 }
 
 model ApiLot {
-  id        String   @id @default(uuid()) @db.Uuid
-  lotNumber String   @map("lot_number")
+  id        String  @id @default(uuid()) @db.Uuid
+  lotNumber String  @map("lot_number")
   supplier  String
   batches   Batch[]
 
@@ -91,16 +102,19 @@ model Batch {
 }
 
 model Case {
-  id         String     @id @default(uuid()) @db.Uuid
-  batchId    String     @map("batch_id") @db.Uuid
-  caseCode   String     @unique @map("case_code")
-  signature  String?
-  status     CaseStatus @default(CREATED)
-  receivedBy String?    @map("received_by") @db.Uuid
-  receivedAt DateTime?  @map("received_at") @db.Timestamptz(6)
-  batch      Batch      @relation(fields: [batchId], references: [id], onDelete: Restrict)
-  receiver   User?      @relation("CaseReceiver", fields: [receivedBy], references: [id], onDelete: SetNull)
-  packs      Pack[]
+  id                     String     @id @default(uuid()) @db.Uuid
+  batchId                String     @map("batch_id") @db.Uuid
+  caseCode               String     @unique @map("case_code")
+  signature              String?
+  status                 CaseStatus @default(CREATED)
+  receivedBy             String?    @map("received_by") @db.Uuid
+  receivedAt             DateTime?  @map("received_at") @db.Timestamptz(6)
+  expectedRecipientOrgId String?    @map("expected_recipient_org_id") @db.Uuid
+  shippedAt              DateTime?  @map("shipped_at") @db.Timestamptz(6)
+  batch                  Batch      @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  receiver               User?      @relation("CaseReceiver", fields: [receivedBy], references: [id], onDelete: SetNull)
+  expectedRecipient      User?      @relation("CaseExpectedRecipient", fields: [expectedRecipientOrgId], references: [id], onDelete: SetNull)
+  packs                  Pack[]
 
   @@index([batchId])
   @@map("cases")
@@ -114,7 +128,10 @@ model Pack {
   status         PackStatus @default(ACTIVE)
   scanCount      Int        @default(0) @map("scan_count")
   firstScannedAt DateTime?  @map("first_scanned_at") @db.Timestamptz(6)
+  soldByOrgId    String?    @map("sold_by_org_id") @db.Uuid
+  soldAt         DateTime?  @map("sold_at") @db.Timestamptz(6)
   parentCase     Case       @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  soldBy         User?      @relation("PackSeller", fields: [soldByOrgId], references: [id], onDelete: SetNull)
 
   @@index([caseId])
   @@map("packs")
@@ -122,20 +139,36 @@ model Pack {
 
 model Scan {
   id           String         @id @default(uuid()) @db.Uuid
-  scannedBy    String         @map("scanned_by") @db.Uuid
+  scannedBy    String?        @map("scanned_by") @db.Uuid
   targetType   ScanTargetType @map("target_type")
+  action       ScanAction     @default(CHECK)
   serialOrCode String         @map("serial_or_code")
   result       ScanResult
   reason       String?
   lat          Float?         @db.DoublePrecision
   lng          Float?         @db.DoublePrecision
+  deviceId     String?        @map("device_id")
+  sourceIpHash String?        @map("source_ip_hash")
   createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  scanner      User           @relation(fields: [scannedBy], references: [id], onDelete: Restrict)
+  scanner      User?          @relation(fields: [scannedBy], references: [id], onDelete: SetNull)
 
   @@index([serialOrCode, createdAt])
   @@index([scannedBy, createdAt])
   @@index([result, createdAt])
+  @@index([sourceIpHash, createdAt])
+  @@index([serialOrCode, action, createdAt])
   @@map("scans")
+}
+
+model ConsumerReport {
+  id           String   @id @default(uuid()) @db.Uuid
+  serial       String
+  message      String
+  sourceIpHash String?  @map("source_ip_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([serial, createdAt])
+  @@map("consumer_reports")
 }
 
 model LedgerEvent {

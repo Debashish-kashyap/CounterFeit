@@ -10,7 +10,7 @@ Counterfeit medicines enter the supply chain, pharmacies cannot verify authentic
 ## Solution: five layers
 1. **Unit-level QR:** one unique, signed serial per pack
 2. **Bulk scanning:** case and pallet codes to check a delivery in one scan
-3. **Scan-anomaly engine:** repeat scans and impossible travel between locations
+3. **Scan-anomaly engine:** conflicting custody facts, impossible travel, and pre-sale device/place signals
 4. **AI packaging check:** image similarity and OCR, reported as a suspicion score
 5. **Tamper-evident ledger:** hash-chained custody events
 
@@ -143,28 +143,45 @@ Creating a batch writes the batch, cases, packs, and `BATCH_REGISTERED` ledger
 event atomically. QR values use the documented base64url JSON payload plus an
 HMAC signature.
 
-### Pharmacy verification API
+### Check, shipment, receipt, and sale API
 
-Sign in as a pharmacy and pass its bearer token to:
+The public, read-only pack check is separate from billing:
 
-- `POST /verify/case` with `{ "payload": "<case QR content>", "lat": 26.14,
-  "lng": 91.73 }` to record receipt of a case. Repeating receipt at the same
-  pharmacy is idempotent; another pharmacy scanning that received case gets a
-  `SUSPICIOUS` result.
-- `POST /verify/pack` with `{ "payload": "<pack QR content>", "lat": 26.14,
-  "lng": 91.73 }` to verify one pack.
+- `POST /verify/check` with `{ "payload": "<pack QR content>", "lat": 26.14,
+  "lng": 91.73, "deviceId": "<stable browser ID>" }` requires no login. It
+  records a check and a `PACK_CHECKED` ledger event, but does not change pack
+  state or flag a pack merely because it was checked repeatedly.
+- `POST /reports` with the same signed pack `payload` and a `message` such as
+  `"I bought this elsewhere"` records a public buyer report.
 
-Both coordinates are optional, but must be provided together. QR scans are
-recorded, including unknown or invalid QR attempts. Pack verification checks
-expiry, repeat scans, scans at other pharmacies, impossible travel (900 km/h
-threshold), and whether the parent case was received by the scanning pharmacy.
-Suspicious pack scans flag the pack and append ledger events in the same
-transaction as the scan record.
+Manufacturer accounts can record the custody destination:
 
-Verification results include `GENUINE`, `SUSPICIOUS`, `EXPIRED`, or `UNKNOWN`.
-If GPS coordinates are omitted, the API uses the pharmacy's registered
-coordinates when available. Receiving a case also updates its active child
-packs to `RECEIVED` in the same transaction.
+- `GET /shipments/recipients` lists pharmacy accounts available as recipients.
+- `POST /shipments` with `{ "caseCode": "<case code>", "toOrgId": "<pharmacy user ID>" }`
+  records the expected recipient and a `SHIPPED` ledger event. Only the
+  manufacturer that owns the batch can ship its cases.
+
+Pharmacy accounts use these billing and receiving actions:
+
+- `POST /cases/:code/receive` with optional `{ "lat": 26.14, "lng": 91.73,
+  "deviceId": "<stable browser ID>" }` records receipt only when the pharmacy
+  matches the shipment's expected recipient. An unshipped case or a receipt at
+  another pharmacy returns `SUSPICIOUS` with reason `"outside intended chain"`
+  and records the attempted pharmacy, without transferring custody.
+- `POST /packs/:serial/sell` with optional coordinates/device ID records the
+  pharmacy sale and sets the pack to `SOLD`. A second sale returns
+  `SUSPICIOUS` with `"already sold"`; an attempt by another pharmacy also
+  includes `"sold by a different org than the one claiming it"`.
+
+Checks return `GENUINE`, `SUSPICIOUS`, `EXPIRED`, or `UNKNOWN`, with a `reasons`
+array. An already-sold pack without a conflict is still `GENUINE` and includes
+the dispensing pharmacy and time. Conflicts include impossible travel above
+800 km/h between consecutive located events, three or more distinct devices
+or places (places separated by at least 10 km) checking a pack before sale,
+and sale/receipt outside the expected chain. Public checks are rate-limited to
+60 per source IP per minute and 30 per pack per minute. IPs are stored only as
+SHA-256 hashes. Device IDs are client-generated signals, not authenticated
+device identities.
 
 ### Regulator dashboard and ledger API
 
@@ -176,6 +193,8 @@ Regulator-only endpoints:
   Optional filters: `result`, `targetType`, `from`, and `to` (ISO dates).
 - `GET /dashboard/flagged?page=1&limit=50` returns suspicious scans and reasons.
 - `GET /dashboard/hotspots` groups suspicious scans with coordinates.
+- `GET /reports/reconciliation` compares received and sold packs per pharmacy,
+  flagging over-sales and sales from cases not shipped to that pharmacy.
 - `GET /ledger/events?limit=50` returns recent events and their hashes.
 - `GET /ledger/verify` recomputes the chain and reports the first broken event
   id, if any.

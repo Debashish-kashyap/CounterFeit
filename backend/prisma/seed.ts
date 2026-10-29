@@ -198,6 +198,8 @@ async function main(): Promise<void> {
             status: received ? CaseStatus.RECEIVED : CaseStatus.CREATED,
             receivedBy: received ? guwahatiPharmacy.id : null,
             receivedAt: received ? now : null,
+            expectedRecipientOrgId: received ? guwahatiPharmacy.id : null,
+            shippedAt: received ? now : null,
           },
         });
         const packs = Array.from({ length: 10 }, () => {
@@ -212,6 +214,17 @@ async function main(): Promise<void> {
         await tx.pack.createMany({ data: packs });
 
         if (received) {
+          await appendSeedEvent(
+            tx,
+            "SHIPPED",
+            {
+              caseId: createdCase.id,
+              caseCode: createdCase.caseCode,
+              fromOrgId: manufacturer.id,
+              toOrgId: guwahatiPharmacy.id,
+            },
+            now,
+          );
           await appendSeedEvent(
             tx,
             "CASE_RECEIVED",

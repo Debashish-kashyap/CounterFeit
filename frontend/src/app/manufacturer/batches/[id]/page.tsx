@@ -23,6 +23,8 @@ type QrSheet = {
   }>;
 };
 
+type Recipient = { id: string; name: string; locationName: string | null };
+
 function displayDate(value: string) {
   return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(value));
 }
@@ -32,18 +34,27 @@ export default function BatchDetailsPage() {
   const { token } = useSession();
   const [sheet, setSheet] = useState<QrSheet | null>(null);
   const [selectedCase, setSelectedCase] = useState("");
+  const [recipients, setRecipients] = useState<Recipient[]>([]);
+  const [selectedRecipient, setSelectedRecipient] = useState("");
   const [busy, setBusy] = useState(true);
+  const [shipping, setShipping] = useState(false);
+  const [shipmentNotice, setShipmentNotice] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (!token || !params.id) return;
     let active = true;
     setBusy(true);
-    void apiRequest<QrSheet>(`/batches/${encodeURIComponent(params.id)}/qr`, token)
-      .then((result) => {
+    void Promise.all([
+      apiRequest<QrSheet>(`/batches/${encodeURIComponent(params.id)}/qr`, token),
+      apiRequest<Recipient[]>("/shipments/recipients", token),
+    ])
+      .then(([result, nextRecipients]) => {
         if (!active) return;
         setSheet(result);
         setSelectedCase(result.cases[0]?.caseCode ?? "");
+        setRecipients(nextRecipients);
+        setSelectedRecipient(nextRecipients[0]?.id ?? "");
       })
       .catch((requestError) => {
         if (active) setError(requestError instanceof Error ? requestError.message : "Unable to load QR sheet");
@@ -58,6 +69,28 @@ export default function BatchDetailsPage() {
 
   const caseData = sheet?.cases.find((item) => item.caseCode === selectedCase);
   const packCount = sheet?.cases.reduce((total, item) => total + item.packs.length, 0) ?? 0;
+
+  async function shipSelectedCase() {
+    if (!token || !caseData || !selectedRecipient) return;
+    setShipping(true);
+    setError("");
+    setShipmentNotice("");
+    try {
+      await apiRequest("/shipments", token, {
+        method: "POST",
+        body: JSON.stringify({
+          caseCode: caseData.caseCode,
+          toOrgId: selectedRecipient,
+        }),
+      });
+      const recipient = recipients.find((item) => item.id === selectedRecipient);
+      setShipmentNotice(`Shipment recorded to ${recipient?.name ?? "pharmacy"}.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to record shipment");
+    } finally {
+      setShipping(false);
+    }
+  }
 
   return (
     <div className="content-wrap">
@@ -85,6 +118,15 @@ export default function BatchDetailsPage() {
               </select>
             </label>
           </div>
+          <div className="shipment-toolbar">
+            <label htmlFor="shipment-recipient">Ship selected case to
+              <select id="shipment-recipient" value={selectedRecipient} onChange={(event) => setSelectedRecipient(event.target.value)} disabled={!recipients.length}>
+                {recipients.map((recipient) => <option value={recipient.id} key={recipient.id}>{recipient.name}{recipient.locationName ? ` · ${recipient.locationName}` : ""}</option>)}
+              </select>
+            </label>
+            <button className="button button-outline" type="button" onClick={() => void shipSelectedCase()} disabled={shipping || !caseData || !selectedRecipient}>{shipping ? <LoaderCircle className="spin" size={16} /> : null}Record shipment</button>
+          </div>
+          {shipmentNotice && <div className="success-banner page-error">{shipmentNotice}</div>}
           {caseData ? <div className="qr-print-area">
             <header className="qr-print-heading"><span>VERITY · MEDICINE TRACEABILITY</span><b>{sheet.batch.drugName} / {sheet.batch.batchNumber}</b><small>Expiry {displayDate(sheet.batch.expiryDate)} · {caseData.caseCode}</small></header>
             <div className="qr-grid"><QrCodeTile value={caseData.content} label={`Case ${caseData.caseCode}`} />{caseData.packs.map((pack) => <QrCodeTile key={pack.serial} value={pack.content} label={`Pack ${pack.serial}`} />)}</div>

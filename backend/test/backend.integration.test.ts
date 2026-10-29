@@ -8,6 +8,7 @@ import {
   CaseStatus,
   PackStatus,
   Prisma,
+  ScanAction,
   ScanResult,
   ScanTargetType,
   UserRole,
@@ -131,7 +132,7 @@ before(async () => {
   process.env.JWT_SECRET = TEST_JWT_SECRET;
   process.env.QR_HMAC_SECRET = TEST_QR_SECRET;
 
-  app = await NestFactory.create(AppModule, { logger: false });
+  app = await NestFactory.create(AppModule, { logger: ["error"] });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -207,7 +208,11 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
   let createdBatchId: string;
   let batchCaseQr: string;
   let batchPackQr: string;
+  let batchPackSerial: string;
   let impossibleTravelPackSerial: string;
+  let impossibleTravelPackQr: string;
+  let unshippedCaseCode: string;
+  let unshippedPackQr: string;
 
   await t.test("auth rejects bad credentials and restricts roles", async () => {
     const invalidLogin = await request("/auth/login", {
@@ -279,7 +284,11 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
     const caseEntry = sheet.body.cases[0];
     batchCaseQr = caseEntry.content;
     batchPackQr = caseEntry.packs[0].content;
+    batchPackSerial = caseEntry.packs[0].serial;
     impossibleTravelPackSerial = caseEntry.packs[1].serial;
+    impossibleTravelPackQr = caseEntry.packs[1].content;
+    unshippedCaseCode = sheet.body.cases[1].caseCode;
+    unshippedPackQr = sheet.body.cases[1].packs[0].content;
     assert.equal(caseEntry.content.split(".")[1].length, 64);
     assert.equal(caseEntry.packs[0].content.split(".")[1].length, 64);
 
@@ -318,22 +327,59 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
     assert.equal(invalidBatch.status, 400);
   });
 
-  await t.test("case receipt updates child packs once and flags another pharmacy", async () => {
+  await t.test("shipments set an expected recipient and case receipts enforce it", async () => {
+    const pharmacies = await request<Array<{ id: string }>>(
+      "/shipments/recipients",
+      { token: manufacturerToken },
+    );
+    assert.ok(pharmacies.body.length >= 2);
+    const pharmacyOne = await prisma.user.findUniqueOrThrow({
+      where: { email: TEST_USERS.pharmacyOne },
+      select: { id: true },
+    });
+
+    const outsideReceipt = await request<{ result: ScanResult; reason: string }>(
+      `/cases/${encodeURIComponent(unshippedCaseCode)}/receive`,
+      {
+        token: pharmacyTwoToken,
+        method: "POST",
+        body: {},
+      },
+    );
+    assert.equal(outsideReceipt.body.result, ScanResult.SUSPICIOUS);
+    assert.equal(outsideReceipt.body.reason, "outside intended chain");
+
+    const shipped = await request<{ caseCode: string; repeated: boolean }>(
+      "/shipments",
+      {
+        token: manufacturerToken,
+        method: "POST",
+        body: {
+          caseCode: JSON.parse(
+            Buffer.from(batchCaseQr.split(".")[0], "base64url").toString("utf8"),
+          ).s as string,
+          toOrgId: pharmacyOne.id,
+        },
+      },
+    );
+    assert.equal(shipped.status, 201);
+    assert.equal(shipped.body.repeated, false);
+
+    const caseCode = JSON.parse(
+      Buffer.from(batchCaseQr.split(".")[0], "base64url").toString("utf8"),
+    ).s as string;
     const received = await request<{
       result: ScanResult;
       packsReceived: number;
-    }>("/verify/case", {
+    }>(`/cases/${encodeURIComponent(caseCode)}/receive`, {
       token: pharmacyOneToken,
       method: "POST",
-      body: { payload: batchCaseQr },
+      body: {},
     });
     assert.equal(received.status, 200);
     assert.equal(received.body.result, ScanResult.GENUINE);
     assert.equal(received.body.packsReceived, 2);
 
-    const caseCode = JSON.parse(
-      Buffer.from(batchCaseQr.split(".")[0], "base64url").toString("utf8"),
-    ).s as string;
     const caseRecord = await prisma.case.findUniqueOrThrow({
       where: { caseCode },
     });
@@ -343,11 +389,14 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
     assert.equal(caseRecord.status, CaseStatus.RECEIVED);
     assert.ok(packs.every((pack) => pack.status === PackStatus.RECEIVED));
 
-    const repeated = await request<{ result: ScanResult }>("/verify/case", {
+    const repeated = await request<{ result: ScanResult }>(
+      `/cases/${encodeURIComponent(caseCode)}/receive`,
+      {
       token: pharmacyOneToken,
       method: "POST",
-      body: { payload: batchCaseQr },
-    });
+      body: {},
+      },
+    );
     assert.equal(repeated.body.result, ScanResult.GENUINE);
     assert.equal(
       await prisma.ledgerEvent.count({
@@ -360,43 +409,175 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
     );
 
     const secondPharmacy = await request<{ result: ScanResult; reason: string }>(
-      "/verify/case",
+      `/cases/${encodeURIComponent(caseCode)}/receive`,
       {
         token: pharmacyTwoToken,
         method: "POST",
-        body: { payload: batchCaseQr },
+        body: {},
       },
     );
     assert.equal(secondPharmacy.body.result, ScanResult.SUSPICIOUS);
-    assert.equal(secondPharmacy.body.reason, "case received at two places");
+    assert.equal(secondPharmacy.body.reason, "outside intended chain");
   });
 
-  await t.test("pack checks classify genuine, repeat, invalid, unknown, and expired scans", async () => {
+  await t.test("public checks never sell or flag by repeat count; sales are separate", async () => {
     const validResults: ScanResult[] = [];
     for (let scan = 0; scan < 4; scan += 1) {
-      const result = await request<{ result: ScanResult; scanCount: number }>(
-        "/verify/pack",
+      const result = await request<{ result: ScanResult; reasons: string[] }>(
+        "/verify/check",
         {
-          token: pharmacyOneToken,
           method: "POST",
           body: { payload: batchPackQr },
         },
       );
       assert.equal(result.status, 200);
       validResults.push(result.body.result);
+      assert.deepEqual(result.body.reasons, []);
     }
     assert.deepEqual(validResults, [
       ScanResult.GENUINE,
       ScanResult.GENUINE,
       ScanResult.GENUINE,
-      ScanResult.SUSPICIOUS,
+      ScanResult.GENUINE,
     ]);
+    const unchangedPack = await prisma.pack.findUniqueOrThrow({
+      where: { serial: batchPackSerial },
+    });
+    assert.equal(unchangedPack.scanCount, 0);
+    assert.equal(unchangedPack.status, PackStatus.RECEIVED);
+
+    const firstSale = await request<{ result: ScanResult; sold: boolean }>(
+      `/packs/${batchPackSerial}/sell`,
+      { token: pharmacyOneToken, method: "POST", body: {} },
+    );
+    assert.equal(firstSale.body.result, ScanResult.GENUINE);
+    assert.equal(firstSale.body.sold, true);
+
+    const repeatedSale = await request<{
+      result: ScanResult;
+      reasons: string[];
+    }>(`/packs/${batchPackSerial}/sell`, {
+      token: pharmacyOneToken,
+      method: "POST",
+      body: {},
+    });
+    assert.equal(repeatedSale.body.result, ScanResult.SUSPICIOUS);
+    assert.deepEqual(repeatedSale.body.reasons, ["already sold"]);
+
+    const saleFromOtherOrg = await request<{
+      result: ScanResult;
+      reasons: string[];
+    }>(`/packs/${batchPackSerial}/sell`, {
+      token: pharmacyTwoToken,
+      method: "POST",
+      body: {},
+    });
+    assert.equal(saleFromOtherOrg.body.result, ScanResult.SUSPICIOUS);
+    assert.deepEqual(saleFromOtherOrg.body.reasons, [
+      "already sold",
+      "sold by a different org than the one claiming it",
+    ]);
+
+    const afterSaleCheck = await request<{
+      result: ScanResult;
+      message: string;
+      sold: boolean;
+    }>("/verify/check", {
+      method: "POST",
+      body: { payload: batchPackQr },
+    });
+    assert.equal(afterSaleCheck.body.result, ScanResult.GENUINE);
+    assert.equal(afterSaleCheck.body.sold, true);
+    assert.match(afterSaleCheck.body.message, /Dispensed by Test Pharmacy One on/);
+
+    const unshippedPackSerial = JSON.parse(
+      Buffer.from(unshippedPackQr.split(".")[0], "base64url").toString("utf8"),
+    ).s as string;
+    const outsideSale = await request<{
+      result: ScanResult;
+      reasons: string[];
+      sold: boolean;
+    }>(`/packs/${unshippedPackSerial}/sell`, {
+      token: pharmacyTwoToken,
+      method: "POST",
+      body: {},
+    });
+    assert.equal(outsideSale.body.result, ScanResult.SUSPICIOUS);
+    assert.ok(outsideSale.body.reasons.includes("outside expected recipient"));
+    assert.equal(outsideSale.body.sold, true);
+
+    const devicesPack = await request<{ result: ScanResult; reasons: string[] }>(
+      "/verify/check",
+      {
+        method: "POST",
+        body: { payload: impossibleTravelPackQr, deviceId: "device-one" },
+      },
+    );
+    assert.equal(devicesPack.body.result, ScanResult.GENUINE);
+    await request("/verify/check", {
+      method: "POST",
+    body: { payload: impossibleTravelPackQr, deviceId: "device-two" },
+    });
+    const manyDevices = await request<{
+      result: ScanResult;
+      reasons: string[];
+    }>("/verify/check", {
+      method: "POST",
+      body: { payload: impossibleTravelPackQr, deviceId: "device-three" },
+    });
+    assert.equal(manyDevices.body.result, ScanResult.SUSPICIOUS);
+    assert.ok(manyDevices.body.reasons.includes("many distinct devices before sale"));
+
+    const placeSerial = impossibleTravelPackSerial;
+    const old = Date.now();
+    await prisma.scan.createMany({
+      data: [
+        {
+          targetType: ScanTargetType.PACK,
+          action: ScanAction.CHECK,
+          serialOrCode: placeSerial,
+          result: ScanResult.GENUINE,
+          lat: 26.1445,
+          lng: 91.7362,
+          createdAt: new Date(old - 6 * 3_600_000),
+        },
+        {
+          targetType: ScanTargetType.PACK,
+          action: ScanAction.CHECK,
+          serialOrCode: placeSerial,
+          result: ScanResult.GENUINE,
+          lat: 25.5941,
+          lng: 85.1376,
+          createdAt: new Date(old - 3 * 3_600_000),
+        },
+      ],
+    });
+    const manyPlaces = await request<{
+      result: ScanResult;
+      reasons: string[];
+    }>("/verify/check", {
+      method: "POST",
+      body: {
+        payload: impossibleTravelPackQr,
+        lat: 22.5726,
+        lng: 88.3639,
+        deviceId: "place-check-device",
+      },
+    });
+    assert.equal(manyPlaces.body.result, ScanResult.SUSPICIOUS);
+    assert.ok(manyPlaces.body.reasons.includes("many distinct places before sale"));
+
+    const buyerReport = await request<{ accepted: boolean }>("/reports", {
+      method: "POST",
+      body: { payload: batchPackQr, message: "I bought this elsewhere" },
+    });
+    assert.equal(buyerReport.status, 201);
+    assert.equal(buyerReport.body.accepted, true);
 
     const invalidSignature = `${batchPackQr.slice(0, -1)}${batchPackQr.endsWith("0") ? "1" : "0"}`;
     const invalid = await request<{ result: ScanResult; reason: string }>(
-      "/verify/pack",
+      "/verify/check",
       {
-        token: pharmacyOneToken,
         method: "POST",
         body: { payload: invalidSignature },
       },
@@ -405,9 +586,8 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
     assert.equal(invalid.body.reason, "signature invalid");
 
     const unknown = await request<{ result: ScanResult; reason: string }>(
-      "/verify/pack",
+      "/verify/check",
       {
-        token: pharmacyOneToken,
         method: "POST",
         body: { payload: createQr("P", "unregistered-pack") },
       },
@@ -436,8 +616,7 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
     }>(`/batches/${createdExpired.body.id}/qr`, {
       token: manufacturerToken,
     });
-    const expired = await request<{ result: ScanResult }>("/verify/pack", {
-      token: pharmacyOneToken,
+    const expired = await request<{ result: ScanResult }>("/verify/check", {
       method: "POST",
       body: { payload: expiredSheet.body.cases[0].packs[0].content },
     });
@@ -452,6 +631,7 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
       data: {
         scannedBy: pharmacyOne.id,
         targetType: ScanTargetType.PACK,
+        action: ScanAction.CHECK,
         serialOrCode: impossibleTravelPackSerial,
         result: ScanResult.GENUINE,
         lat: 19.076,
@@ -467,41 +647,39 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
       .find((pack) => pack.serial === impossibleTravelPackSerial);
     assert.ok(travelPack);
 
-    const travel = await request<{ result: ScanResult; reason: string }>(
-      "/verify/pack",
+    const travel = await request<{ result: ScanResult; reasons: string[] }>(
+      "/verify/check",
       {
-        token: pharmacyOneToken,
         method: "POST",
         body: {
           payload: travelPack.content,
           lat: 26.1445,
           lng: 91.7362,
+          deviceId: "travel-test-device",
         },
       },
     );
     assert.equal(travel.body.result, ScanResult.SUSPICIOUS);
-    assert.match(travel.body.reason, /impossible travel/);
+    assert.ok(travel.body.reasons.includes("impossible travel"));
 
-    const halfCoordinates = await request("/verify/pack", {
-      token: pharmacyOneToken,
+    const halfCoordinates = await request("/verify/check", {
       method: "POST",
       body: { payload: travelPack.content, lat: 26.1445 },
     });
     assert.equal(halfCoordinates.status, 400);
 
-    const invalidCoordinates = await request("/verify/pack", {
-      token: pharmacyOneToken,
+    const invalidCoordinates = await request("/verify/check", {
       method: "POST",
       body: { payload: travelPack.content, lat: 120, lng: 10 },
     });
     assert.equal(invalidCoordinates.status, 400);
 
-    const unknownCase = await request<{ result: ScanResult }>("/verify/case", {
+    const unknownCase = await request("/cases/unregistered-case/receive", {
       token: pharmacyOneToken,
       method: "POST",
-      body: { payload: createQr("C", "unregistered-case") },
+      body: {},
     });
-    assert.equal(unknownCase.body.result, ScanResult.UNKNOWN);
+    assert.equal(unknownCase.status, 404);
   });
 
   await t.test("dashboard data is paginated, filtered, and regulator-only", async () => {
@@ -552,6 +730,21 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
         (spot) => spot.lat === 26.1445 && spot.lng === 91.7362,
       ),
     );
+
+    const reconciliation = await request<
+      Array<{
+        pharmacy: { email: string };
+        flagged: boolean;
+        reasons: string[];
+        outsideShipmentPacks: number;
+      }>
+    >("/reports/reconciliation", { token: regulatorToken });
+    assert.equal(reconciliation.status, 200);
+    const pharmacyTwoStock = reconciliation.body.find(
+      (item) => item.pharmacy.email === TEST_USERS.pharmacyTwo,
+    );
+    assert.ok(pharmacyTwoStock?.flagged);
+    assert.ok(pharmacyTwoStock?.outsideShipmentPacks > 0);
   });
 
   await t.test("ledger verification detects tampering and validates restoration", async () => {
@@ -610,7 +803,7 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
       token: regulatorToken,
       method: "POST",
     });
-    assert.equal(anchorResponse.status, 201);
+    assert.equal(anchorResponse.status, 201, JSON.stringify(anchorResponse.body));
     assert.equal(anchorResponse.body.eventCount, 2);
     assert.match(anchorResponse.body.merkleRoot, /^[a-f0-9]{64}$/);
 
@@ -643,5 +836,51 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
       method: "POST",
     });
     assert.equal(deniedAnchor.status, 403);
+  });
+
+  await t.test("public checks rate-limit a source without mutating pack state", async () => {
+    const firstCheck = await prisma.scan.findFirstOrThrow({
+      where: {
+        action: ScanAction.CHECK,
+        sourceIpHash: { not: null },
+      },
+      select: { sourceIpHash: true },
+    });
+    const since = new Date(Date.now() - 60_000);
+    let checksInWindow = await prisma.scan.count({
+      where: {
+        action: ScanAction.CHECK,
+        sourceIpHash: firstCheck.sourceIpHash,
+        createdAt: { gte: since },
+      },
+    });
+    const rateLimitQrValues = [
+      batchPackQr,
+      impossibleTravelPackQr,
+      unshippedPackQr,
+    ];
+    let requestIndex = 0;
+    while (checksInWindow < 60) {
+      const response = await request("/verify/check", {
+        method: "POST",
+        body: {
+          payload: rateLimitQrValues[requestIndex % rateLimitQrValues.length],
+        },
+      });
+      assert.equal(response.status, 200);
+      checksInWindow += 1;
+      requestIndex += 1;
+    }
+
+    const limited = await request("/verify/check", {
+      method: "POST",
+      body: { payload: batchPackQr },
+    });
+    assert.equal(limited.status, 429);
+    const pack = await prisma.pack.findUniqueOrThrow({
+      where: { serial: batchPackSerial },
+    });
+    assert.equal(pack.status, PackStatus.SOLD);
+    assert.equal(pack.scanCount, 0);
   });
 });

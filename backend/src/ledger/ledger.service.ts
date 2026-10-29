@@ -96,7 +96,9 @@ export class LedgerService {
 
   async createMerkleAnchor(limit: number) {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(81025001)`;
+      await tx.$queryRaw<{ locked: boolean }>`
+        SELECT pg_advisory_xact_lock(81025001) IS NULL AS locked
+      `;
       const previousAnchor = await tx.merkleAnchor.findFirst({
         orderBy: { toEventId: "desc" },
         select: { toEventId: true },

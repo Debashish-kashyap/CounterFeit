@@ -26,14 +26,23 @@ type Summary = {
 type Scan = {
   id: string;
   targetType: "PACK" | "CASE";
+  action: "CHECK" | "SALE" | "CASE_RECEIPT";
   serialOrCode: string;
   result: "GENUINE" | "SUSPICIOUS" | "EXPIRED" | "UNKNOWN";
   reason: string | null;
   createdAt: string;
-  scanner: { name: string; locationName: string | null };
+  scanner: { name: string; locationName: string | null } | null;
 };
 
 type Page<T> = { data: T[]; pagination: { total: number } };
+type Reconciliation = {
+  pharmacy: { id: string; name: string; email: string };
+  packsReceived: number;
+  packsSold: number;
+  outsideShipmentPacks: number;
+  flagged: boolean;
+  reasons: string[];
+};
 
 const metricDetails = [
   { key: "totalScans", label: "TOTAL SCANS", icon: ScanLine, foot: "All verification attempts" },
@@ -55,6 +64,7 @@ export default function DashboardPage() {
   const [scans, setScans] = useState<Scan[]>([]);
   const [flagged, setFlagged] = useState<Scan[]>([]);
   const [hotspots, setHotspots] = useState<Hotspot[]>([]);
+  const [reconciliation, setReconciliation] = useState<Reconciliation[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -63,16 +73,18 @@ export default function DashboardPage() {
     setBusy(true);
     setError("");
     try {
-      const [nextSummary, nextScans, nextFlagged, nextHotspots] = await Promise.all([
+      const [nextSummary, nextScans, nextFlagged, nextHotspots, nextReconciliation] = await Promise.all([
         apiRequest<Summary>("/dashboard/summary", token),
         apiRequest<Page<Scan>>("/dashboard/scans?page=1&limit=8", token),
         apiRequest<Page<Scan>>("/dashboard/flagged?page=1&limit=5", token),
         apiRequest<Hotspot[]>("/dashboard/hotspots", token),
+        apiRequest<Reconciliation[]>("/reports/reconciliation", token),
       ]);
       setSummary(nextSummary);
       setScans(nextScans.data);
       setFlagged(nextFlagged.data);
       setHotspots(nextHotspots);
+      setReconciliation(nextReconciliation);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to load dashboard");
     } finally {
@@ -123,7 +135,7 @@ export default function DashboardPage() {
                   <tr key={scan.id}>
                     <td><span className={`result-pill result-${scan.result.toLowerCase()}`}>{scan.result}</span></td>
                     <td><span className="item-type">{scan.targetType}</span><code>{scan.serialOrCode}</code></td>
-                    <td>{scan.scanner.locationName || scan.scanner.name}</td>
+                    <td>{scan.scanner?.locationName || scan.scanner?.name || "Public"}</td>
                     <td>{formatDate(scan.createdAt)}</td>
                   </tr>
                 ))}</tbody>
@@ -144,7 +156,7 @@ export default function DashboardPage() {
                 <div className="flagged-item-top"><span className="result-pill result-suspicious">SUSPICIOUS</span><time>{formatDate(scan.createdAt)}</time></div>
                 <b>{scan.targetType} · {scan.serialOrCode}</b>
                 <p>{scan.reason || "No reason recorded"}</p>
-                <small>{scan.scanner.locationName || scan.scanner.name}</small>
+                <small>{scan.scanner?.locationName || scan.scanner?.name || "Public"}</small>
               </article>
             ))}</div>
           ) : <div className="empty-state"><ShieldCheck size={20} /><span>No flagged scans</span><small>Suspicious attempts will be listed here.</small></div>}
@@ -154,6 +166,11 @@ export default function DashboardPage() {
       <section className="section-block hotspot-block">
         <div className="section-heading events-heading"><div><span className="eyebrow">LOCATION SIGNALS</span><h2>Suspicious-scan hotspots</h2></div><span className="count-pill">{hotspots.length}</span></div>
         {hotspots.length ? <div className="table-scroll"><table><thead><tr><th>LATITUDE</th><th>LONGITUDE</th><th>FLAGGED SCANS</th></tr></thead><tbody>{hotspots.slice(0, 8).map((spot) => <tr key={`${spot.lat}-${spot.lng}`}><td>{spot.lat.toFixed(4)}</td><td>{spot.lng.toFixed(4)}</td><td><span className="result-pill result-suspicious">{spot.count}</span></td></tr>)}</tbody></table></div> : <div className="empty-state"><MapPin size={20} /><span>No location hotspots</span><small>Flagged scans with coordinates will be grouped here.</small></div>}
+      </section>
+
+      <section className="section-block hotspot-block">
+        <div className="section-heading events-heading"><div><span className="eyebrow">STOCK CONTROL</span><h2>Pharmacy reconciliation</h2></div><span className="count-pill">{reconciliation.filter((item) => item.flagged).length} flagged</span></div>
+        {reconciliation.length ? <div className="table-scroll"><table><thead><tr><th>PHARMACY</th><th>PACKS RECEIVED</th><th>PACKS SOLD</th><th>STATUS</th></tr></thead><tbody>{reconciliation.map((item) => <tr key={item.pharmacy.id}><td>{item.pharmacy.name}</td><td>{item.packsReceived}</td><td>{item.packsSold}</td><td><span className={`result-pill ${item.flagged ? "result-suspicious" : "result-genuine"}`}>{item.flagged ? item.reasons.join("; ") : "RECONCILED"}</span></td></tr>)}</tbody></table></div> : <div className="empty-state"><Activity size={20} /><span>{busy ? "Loading reconciliation" : "No pharmacy accounts"}</span><small>Received and sold stock will be compared here.</small></div>}
       </section>
 
       <footer className="page-footer"><span>VERITY · REGULATOR OVERVIEW</span><span>{summary?.totalScans ?? 0} scan records</span></footer>
