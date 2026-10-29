@@ -206,7 +206,7 @@ async function main(): Promise<void> {
             caseId: createdCase.id,
             serial,
             signature: qrSignature("P", serial),
-            status: PackStatus.ACTIVE,
+            status: received ? PackStatus.RECEIVED : PackStatus.ACTIVE,
           };
         });
         await tx.pack.createMany({ data: packs });

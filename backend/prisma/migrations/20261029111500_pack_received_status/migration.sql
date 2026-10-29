@@ -1,0 +1,1 @@
+ALTER TYPE "pack_status" ADD VALUE 'RECEIVED';

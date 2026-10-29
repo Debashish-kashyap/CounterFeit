@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import {
   CaseStatus,
+  PackStatus,
   Prisma,
   ScanResult,
   ScanTargetType,
@@ -342,6 +343,13 @@ export class VerifyService {
           },
         });
       }
+      await tx.pack.updateMany({
+        where: {
+          caseId: existingCase.id,
+          status: PackStatus.ACTIVE,
+        },
+        data: { status: PackStatus.RECEIVED },
+      });
 
       const scan = await tx.scan.create({
         data: {

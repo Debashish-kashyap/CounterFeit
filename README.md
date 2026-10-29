@@ -73,6 +73,32 @@ and sample scan/ledger events. All demo accounts use `DemoPass123!`:
 The initial backend exposes `GET http://localhost:3001/health` and Swagger UI
 at `http://localhost:3001/docs`.
 
+### Backend integration tests
+
+The backend integration suite starts the real NestJS app and tests auth, role
+checks, batch/QR creation, pack and case verification, anomaly outcomes,
+dashboard filters, and ledger tamper detection. It **truncates all application
+tables** before each run, so it only accepts a dedicated local database named
+`backend_integration_test`.
+
+Create that database once (change the Postgres user if you customized it):
+
+```powershell
+docker compose exec -T db psql -U veripack -d postgres -c "CREATE DATABASE backend_integration_test;"
+```
+
+Then from `backend/`, point both migration and test commands at that database:
+
+```powershell
+$env:DATABASE_URL = "postgresql://veripack:veripack@localhost:5432/backend_integration_test?schema=public"
+npm run db:deploy
+$env:TEST_DATABASE_URL = $env:DATABASE_URL
+npm test
+```
+
+Use your local Postgres credentials in the connection URL. The test runner
+refuses any remote host or database name other than `backend_integration_test`.
+
 ### Auth and manufacturer API
 
 Set both `JWT_SECRET` and `QR_HMAC_SECRET` in `.env` to different private,
@@ -118,7 +144,8 @@ transaction as the scan record.
 
 Verification results include `GENUINE`, `SUSPICIOUS`, `EXPIRED`, or `UNKNOWN`.
 If GPS coordinates are omitted, the API uses the pharmacy's registered
-coordinates when available.
+coordinates when available. Receiving a case also updates its active child
+packs to `RECEIVED` in the same transaction.
 
 ### Regulator dashboard and ledger API
 

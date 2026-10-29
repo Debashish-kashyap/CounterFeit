@@ -24,6 +24,7 @@ enum CaseStatus {
 
 enum PackStatus {
   ACTIVE
+  RECEIVED
   DISPENSED
   FLAGGED
 
