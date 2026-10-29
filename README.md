@@ -73,6 +73,25 @@ and sample scan/ledger events. All demo accounts use `DemoPass123!`:
 The initial backend exposes `GET http://localhost:3001/health` and Swagger UI
 at `http://localhost:3001/docs`.
 
+### Frontend
+
+The Next.js app uses the seeded demo accounts above and the backend API at
+`http://localhost:3001` by default. To run it in a second terminal:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. To use another API host, set
+`NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.local` (copy from
+`frontend/.env.example`). The first UI pass
+includes role-based sign-in, a regulator overview and ledger, manufacturer
+batch registration with signed QR payloads, and pharmacy pack/case checks.
+Pharmacy scan history is stored in the current browser because the backend
+does not yet expose a pharmacy-scoped history endpoint.
+
 ### Backend integration tests
 
 The backend integration suite starts the real NestJS app and tests auth, role

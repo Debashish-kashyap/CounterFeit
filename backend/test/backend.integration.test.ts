@@ -600,5 +600,48 @@ test("backend auth, batch, verification, dashboard, and ledger flows", async (t)
       token: pharmacyOneToken,
     });
     assert.equal(deniedEvents.status, 403);
+
+    const anchorResponse = await request<{
+      fromEventId: string;
+      toEventId: string;
+      merkleRoot: string;
+      eventCount: number;
+    }>("/ledger/anchor?limit=2", {
+      token: regulatorToken,
+      method: "POST",
+    });
+    assert.equal(anchorResponse.status, 201);
+    assert.equal(anchorResponse.body.eventCount, 2);
+    assert.match(anchorResponse.body.merkleRoot, /^[a-f0-9]{64}$/);
+
+    const anchors = await request<
+      Array<{
+        fromEventId: string;
+        toEventId: string;
+        merkleRoot: string;
+      }>
+    >("/ledger/anchors", { token: regulatorToken });
+    assert.equal(anchors.status, 200);
+    assert.equal(anchors.body[0].fromEventId, anchorResponse.body.fromEventId);
+    assert.equal(anchors.body[0].toEventId, anchorResponse.body.toEventId);
+    assert.equal(anchors.body[0].merkleRoot, anchorResponse.body.merkleRoot);
+
+    const remainingAnchor = await request("/ledger/anchor?limit=1000", {
+      token: regulatorToken,
+      method: "POST",
+    });
+    assert.equal(remainingAnchor.status, 201);
+
+    const noUnanchoredEvents = await request("/ledger/anchor", {
+      token: regulatorToken,
+      method: "POST",
+    });
+    assert.equal(noUnanchoredEvents.status, 400);
+
+    const deniedAnchor = await request("/ledger/anchor", {
+      token: pharmacyOneToken,
+      method: "POST",
+    });
+    assert.equal(deniedAnchor.status, 403);
   });
 });
