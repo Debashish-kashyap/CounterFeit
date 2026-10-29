@@ -7,7 +7,7 @@ $demoDir = Join-Path $repoRoot ".local-demo"
 $dataDir = Join-Path $demoDir "postgres-data"
 $logFile = Join-Path $demoDir "postgres.log"
 $postgresBinDir = Join-Path $backendDir "node_modules\@embedded-postgres\windows-x64\native\bin"
-$databasePort = 55432
+$databasePort = 55433
 
 if ($env:OS -ne "Windows_NT" -or [Environment]::Is64BitOperatingSystem -eq $false) {
   throw "The no-Docker demo launcher currently requires 64-bit Windows."
@@ -127,6 +127,12 @@ try {
   & npm.cmd run db:deploy
   if ($LASTEXITCODE -ne 0) {
     throw "Database migrations failed."
+  }
+
+  Write-Host "Generating Prisma client..."
+  & npm.cmd run db:generate
+  if ($LASTEXITCODE -ne 0) {
+    throw "Prisma client generation failed."
   }
 
   Write-Host "Creating fresh evaluator demo data..."

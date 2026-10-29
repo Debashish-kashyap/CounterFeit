@@ -12,34 +12,54 @@ export function QrInput({ onScan }: { onScan: (value: string) => void }) {
 
   useEffect(() => {
     if (!cameraOpen || !videoRef.current) return;
+
     let disposed = false;
     let controls: { stop: () => void } | undefined;
     const reader = new BrowserQRCodeReader();
-    setCameraBusy(true);
-    setError("");
+    const cameraOptions = [
+      { audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+      { audio: false, video: { facingMode: { ideal: "user" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+      { audio: false, video: { width: { ideal: 1280 }, height: { ideal: 720 } } },
+      { audio: false, video: true },
+    ];
 
-    void reader
-      .decodeFromConstraints(
-        { audio: false, video: { facingMode: { ideal: "environment" } } },
-        videoRef.current,
-        (result, _decodeError, activeControls) => {
-          if (!result) return;
-          onScan(result.getText());
-          activeControls.stop();
-          setCameraOpen(false);
-        },
-      )
-      .then((activeControls) => {
-        controls = activeControls;
-        if (disposed) controls.stop();
-        else setCameraBusy(false);
-      })
-      .catch(() => {
-        if (!disposed) {
-          setError("Camera unavailable. Paste the QR content or upload a clear image instead.");
+    async function startCamera() {
+      setCameraBusy(true);
+      setError("");
+
+      for (const constraints of cameraOptions) {
+        try {
+          const currentControls = await reader.decodeFromConstraints(
+            constraints,
+            videoRef.current!,
+            (result, _decodeError, activeControls) => {
+              if (!result) return;
+              onScan(result.getText());
+              activeControls.stop();
+              setCameraOpen(false);
+            },
+          );
+
+          controls = currentControls;
+          if (disposed) {
+            controls.stop();
+            return;
+          }
+
           setCameraBusy(false);
+          return;
+        } catch {
+          // Try the next available camera option until one works.
         }
-      });
+      }
+
+      if (!disposed) {
+        setError("Camera unavailable. Paste the QR content or upload a clear image instead.");
+        setCameraBusy(false);
+      }
+    }
+
+    void startCamera();
 
     return () => {
       disposed = true;
