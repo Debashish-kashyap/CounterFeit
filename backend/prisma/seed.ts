@@ -76,6 +76,14 @@ const demoUsers = [
     lat: 28.6139,
     lng: 77.209,
   },
+  {
+    name: "Quick Demo User",
+    email: "a@b",
+    role: UserRole.REGULATOR,
+    locationName: "National Operations",
+    lat: 28.6139,
+    lng: 77.209,
+  },
 ];
 
 function qrSignature(type: "P" | "C", serialOrCode: string): string {
@@ -120,7 +128,8 @@ async function appendSeedEvent(
 }
 
 async function main(): Promise<void> {
-  const passwordHash = await hash("DemoPass123!", 10);
+  const defaultPasswordHash = await hash("DemoPass123!", 10);
+  const quickPasswordHash = await hash("123", 10);
 
   await prisma.$transaction(async (tx) => {
     await tx.merkleAnchor.deleteMany();
@@ -134,7 +143,13 @@ async function main(): Promise<void> {
 
     const users = await Promise.all(
       demoUsers.map((user) =>
-        tx.user.create({ data: { ...user, passwordHash } }),
+        tx.user.create({
+          data: {
+            ...user,
+            passwordHash:
+              user.email === "a@b" ? quickPasswordHash : defaultPasswordHash,
+          },
+        }),
       ),
     );
     const manufacturer = users.find(

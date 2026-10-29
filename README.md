@@ -69,7 +69,7 @@ and sample scan/ledger events. All demo accounts use `DemoPass123!`:
 | Pharmacy (Guwahati) | `pharmacy.guwahati@xuino.demo` |
 | Pharmacy (Mumbai) | `pharmacy.mumbai@xuino.demo` |
 | Regulator | `regulator@xuino.demo` |
-
+| TestDebug | `a@b`| pass: 123|
 The initial backend exposes `GET http://localhost:3001/health` and Swagger UI
 at `http://localhost:3001/docs`.
 
