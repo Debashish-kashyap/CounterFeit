@@ -1,6 +1,7 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
+import { PrismaService } from "../prisma/prisma.service";
 
 type TransactionClient = Prisma.TransactionClient;
 
@@ -24,6 +25,8 @@ function canonicalJson(value: unknown): string {
 
 @Injectable()
 export class LedgerService {
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+
   async append(
     tx: TransactionClient,
     eventType: string,
@@ -45,5 +48,51 @@ export class LedgerService {
     await tx.ledgerEvent.create({
       data: { eventType, payload, prevHash, hash, createdAt },
     });
+  }
+
+  async recentEvents(limit: number) {
+    const events = await this.prisma.ledgerEvent.findMany({
+      orderBy: { id: "desc" },
+      take: limit,
+    });
+    return events.map((event) => ({ ...event, id: event.id.toString() }));
+  }
+
+  async verifyChain(): Promise<{
+    valid: boolean;
+    brokenAtId: string | null;
+    checkedEvents: number;
+  }> {
+    const events = await this.prisma.ledgerEvent.findMany({
+      orderBy: { id: "asc" },
+    });
+    let expectedPreviousHash = "GENESIS";
+
+    for (const event of events) {
+      const expectedHash = createHash("sha256")
+        .update(
+          `${expectedPreviousHash}${event.eventType}${canonicalJson(event.payload)}${event.createdAt.toISOString()}`,
+        )
+        .digest("hex");
+
+      if (
+        event.prevHash !== expectedPreviousHash ||
+        event.hash !== expectedHash
+      ) {
+        return {
+          valid: false,
+          brokenAtId: event.id.toString(),
+          checkedEvents: events.length,
+        };
+      }
+
+      expectedPreviousHash = event.hash;
+    }
+
+    return {
+      valid: true,
+      brokenAtId: null,
+      checkedEvents: events.length,
+    };
   }
 }

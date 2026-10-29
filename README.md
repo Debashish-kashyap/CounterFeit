@@ -120,5 +120,19 @@ Verification results include `GENUINE`, `SUSPICIOUS`, `EXPIRED`, or `UNKNOWN`.
 If GPS coordinates are omitted, the API uses the pharmacy's registered
 coordinates when available.
 
+### Regulator dashboard and ledger API
+
+Sign in as `regulator@xuino.demo` and authorize Swagger with the returned JWT.
+Regulator-only endpoints:
+
+- `GET /dashboard/summary` returns counts for all scans and each result.
+- `GET /dashboard/scans?page=1&limit=50` returns a paginated scan log.
+  Optional filters: `result`, `targetType`, `from`, and `to` (ISO dates).
+- `GET /dashboard/flagged?page=1&limit=50` returns suspicious scans and reasons.
+- `GET /dashboard/hotspots` groups suspicious scans with coordinates.
+- `GET /ledger/events?limit=50` returns recent events and their hashes.
+- `GET /ledger/verify` recomputes the chain and reports the first broken event
+  id, if any.
+
 ## Team
 See [TEAM_ROLES.md](TEAM_ROLES.md).
